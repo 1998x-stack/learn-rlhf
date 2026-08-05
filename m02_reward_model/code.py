@@ -82,6 +82,17 @@ def pair_accuracy(reward_model: nn.Module, pairs: torch.Tensor) -> torch.Tensor:
     return (chosen_rewards > rejected_rewards).float().mean()
 
 
+def preference_margin(reward_model: nn.Module, pairs: torch.Tensor) -> torch.Tensor:
+    """返回 8 个偏好对的原始奖励差 margin = r_chosen - r_rejected（保持差值，不取符号）。"""
+    pair_prompt_ids = pairs[:, 0]
+    chosen_action_ids = pairs[:, 1]
+    rejected_action_ids = pairs[:, 2]
+    with torch.no_grad():
+        chosen_rewards = reward_model(pair_prompt_ids, chosen_action_ids)
+        rejected_rewards = reward_model(pair_prompt_ids, rejected_action_ids)
+    return chosen_rewards - rejected_rewards
+
+
 def print_score_table(model: RewardModel) -> None:
     print("\n===== Reward Model 分数 =====")
     with torch.no_grad():
@@ -127,7 +138,22 @@ def main() -> None:
     print(f"\n最终 BT loss = {reward_loss.item():.4f}")
     print(f"偏好对正确率 accuracy = {accuracy:.4f} (chosen>rejected)")
     print_score_table(reward_model)
-    print(f"\n[PASS] m02 reward_model: RM 学会偏好排序 candidate 0>1、0>2（accuracy={accuracy:.4f}）")
+
+    # ---- v0.1: reward margin 分析（versions.md §9.0.1 关键指标）----
+    # BT 损失只依赖 (r_w - r_l)，所以 margin 的大小/符号直接反映偏好强度与 RM 学习质量：
+    # margin > 0 表示模型判对（chosen 分更高）；margin 越大，胜者被分得越有把握、
+    # 偏好越"强"，RM 学得越干净。只统计 margin，保持原始差值而非符号，才能看出分布形状。
+    margin = preference_margin(reward_model, preference_pairs)  # CPU，与模型一致（无 device 块）
+    margin_mean = margin.mean().item()
+    margin_std = margin.std().item()
+    margin_min = margin.min().item()
+    margin_max = margin.max().item()
+    margin_pos = (margin > 0).float().mean().item()  # 该分数"正确"的偏好对占比，即 accuracy
+    print("\n===== preference margin 分析（versions.md v0.1: reward margin）=====")
+    print(f"margin (r_chosen - r_rejected): "
+          f"mean={margin_mean:.4f} std={margin_std:.4f} min={margin_min:.4f} max={margin_max:.4f}"
+          f"   accuracy(>0)={margin_pos:.4f}")
+    print(f"[PASS] m02 reward_model: RM 学会偏好排序 candidate 0>1、0>2（accuracy={accuracy:.4f}）")
 
 
 if __name__ == "__main__":
