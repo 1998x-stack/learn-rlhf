@@ -207,6 +207,7 @@ def train_grpo(
     epochs: int = 3,
     clip_epsilon: float = 0.2,
     lr: float = 5e-3,
+    grad_clip_norm: float = 1.0,   # 梯度裁剪：GRPO 数值稳定
 ) -> tuple[float, float]:
     """在线 GRPO：每个 prompt 采样 N 个候选，验证器给 0/1，做组内相对优势更新。
 
@@ -247,6 +248,9 @@ def train_grpo(
             loss = -torch.min(unclipped, clipped).mean()
             opt.zero_grad()
             loss.backward()
+            # 梯度裁剪：RL 更新不稳定 -> 在一次更新前把策略梯度的 total-norm
+            # 截到 grad_clip_norm，防止个别梯度尖峰扭曲整步 GRPO 更新。
+            nn.utils.clip_grad_norm_(policy.parameters(), max_norm=grad_clip_norm)
             opt.step()
 
         mean_rew = float(rewards.mean().item())

@@ -263,6 +263,7 @@ def run_ppo(reward_kind: str, reject_unsafe: bool) -> PolicyModel:
     clip_epsilon = 0.2
     kl_beta = 0.01
     entropy_coef = 0.001
+    GRAD_CLIP_NORM = 0.5   # 梯度裁剪：RL 数值稳定（离散 PPO）
 
     batch_prompt_ids = torch.arange(num_prompts, device=device).repeat_interleave(batch_repeats)
 
@@ -326,11 +327,16 @@ def run_ppo(reward_kind: str, reject_unsafe: bool) -> PolicyModel:
 
             policy_optimizer.zero_grad()
             policy_loss.backward()
+            # 梯度裁剪：RL 更新不稳定 -> 在一次更新前把策略梯度的 total-norm
+            # 截到 GRAD_CLIP_NORM，防止个别梯度尖峰扭曲整步更新。
+            nn.utils.clip_grad_norm_(policy.parameters(), max_norm=GRAD_CLIP_NORM)
             policy_optimizer.step()
 
             value_loss = F.mse_loss(value_model(batch_prompt_ids), returns)
             value_optimizer.zero_grad()
             value_loss.backward()
+            # value 网络与策略各自独立，单独裁剪其参数梯度，避免 critic 更新过大。
+            nn.utils.clip_grad_norm_(value_model.parameters(), max_norm=GRAD_CLIP_NORM)
             value_optimizer.step()
 
     return policy

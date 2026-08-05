@@ -148,6 +148,7 @@ def main() -> None:
     # ── 3. REINFORCE + KL（v0.2 核心）──
     # L = - E[ R(a) · logπ_θ(a) ]，其中 R(a) = r_φ(a) - β·log(π_θ/π_ref)。
     policy_optimizer = torch.optim.Adam(policy.parameters(), lr=2e-3)
+    GRAD_CLIP_NORM = 1.0   # 梯度裁剪：REINFORCE 单样本估计更噪，用稍大阈值仍可挡尖峰
     for update in range(400):
         logits = policy(prompt_ids)
         dist = Categorical(logits=logits)
@@ -163,6 +164,9 @@ def main() -> None:
         reinforce_loss = -(reward * log_probs).mean()
         policy_optimizer.zero_grad()
         reinforce_loss.backward()
+        # 梯度裁剪：RL 更新不稳定 -> 在一次更新前把梯度的 total-norm 截到
+        # GRAD_CLIP_NORM，防止单次采样碰到的奖励尖峰把整步更新拽飞。
+        nn.utils.clip_grad_norm_(policy.parameters(), max_norm=GRAD_CLIP_NORM)
         policy_optimizer.step()
 
     obj_after = expected_objective(policy, reward_model, reference_policy, kl_beta)

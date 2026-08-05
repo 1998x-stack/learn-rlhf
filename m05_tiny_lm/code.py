@@ -266,6 +266,7 @@ clip_epsilon = 0.2
 kl_beta = 0.1
 entropy_coef = 0.001
 gamma = 0.9   # cheap n-step returns 的折扣因子
+GRAD_CLIP_NORM = 0.5   # 梯度裁剪：RL 数值稳定（token-level PPO）
 
 
 # ============================================================
@@ -343,6 +344,10 @@ def main() -> None:
             policy_optimizer.zero_grad()
             value_optimizer.zero_grad()
             total_loss.backward()
+            # 梯度裁剪：RL 更新不稳定 -> 在一次更新前把共享主体的梯度 total-norm
+            # 截到 GRAD_CLIP_NORM，防止个别梯度尖峰扭曲整步更新（value head 是
+            # policy.parameters() 的子集，裁剪一次即覆盖 policy 与 value）。
+            nn.utils.clip_grad_norm_(policy.parameters(), max_norm=GRAD_CLIP_NORM)
             policy_optimizer.step()
             value_optimizer.step()
 

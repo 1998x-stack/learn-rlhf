@@ -351,6 +351,7 @@ CLIP_EPS = 0.2
 ENTROPY_COEF = 0.01
 TARGET_KL = 1.0
 BETA_INIT = 1e-3
+GRAD_CLIP_NORM = 1.0   # 梯度裁剪：RL 数值稳定（生产 PPO）
 
 value_model = ValueModel(num_prompts).to(device)
 policy_optimizer = torch.optim.Adam(policy.parameters(), lr=3e-4)
@@ -424,12 +425,16 @@ def main() -> None:
             policy_loss = -torch.min(unclipped, clipped).mean() - ENTROPY_COEF * entropy
             policy_optimizer.zero_grad()
             policy_loss.backward()
+            # 梯度裁剪：RL 更新不稳定 -> 在一次更新前把策略梯度的 total-norm
+            # 截到 GRAD_CLIP_NORM，防止个别梯度尖峰扭曲整步更新。
+            nn.utils.clip_grad_norm_(policy.parameters(), max_norm=GRAD_CLIP_NORM)
             policy_optimizer.step()
 
             vpred = value_model(batch.prompt_id)
             value_loss = F.mse_loss(vpred, returns)
             value_optimizer.zero_grad()
             value_loss.backward()
+            nn.utils.clip_grad_norm_(value_model.parameters(), max_norm=GRAD_CLIP_NORM)
             value_optimizer.step()
 
         # ---- 7.4 自适应 KL：本批 KL 均值驱动 β ----

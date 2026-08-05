@@ -357,6 +357,7 @@ ppo_epochs = 4
 clip_epsilon = 0.2
 kl_beta = 0.02
 entropy_coef = 0.01
+GRAD_CLIP_NORM = 0.5   # 深化: gradient clipping —— RL 数值稳定的常用细节
 
 
 for update in range(ppo_updates):
@@ -479,6 +480,10 @@ for update in range(ppo_updates):
 
         policy_optimizer.zero_grad()
         policy_loss.backward()
+        # --- 深化: gradient clipping ---
+        # 梯度裁剪：RL 更新不稳定 -> 在一次更新前把策略梯度的 total-norm 截到
+        # GRAD_CLIP_NORM，防止个别梯度尖峰扭曲整步更新。
+        nn.utils.clip_grad_norm_(policy.parameters(), max_norm=GRAD_CLIP_NORM)
         policy_optimizer.step()
 
         predicted_values = value_model(
@@ -492,6 +497,9 @@ for update in range(ppo_updates):
 
         value_optimizer.zero_grad()
         value_loss.backward()
+        # --- 深化: gradient clipping ---
+        # value 网络与策略各自独立，单独裁剪其参数梯度，避免 critic 更新过大。
+        nn.utils.clip_grad_norm_(value_model.parameters(), max_norm=GRAD_CLIP_NORM)
         value_optimizer.step()
 
     if update % 25 == 0:
