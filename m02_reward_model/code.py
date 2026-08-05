@@ -42,8 +42,6 @@ prompt_ids = torch.arange(num_prompts)
 
 # 每个 prompt 生成两个偏好对：(prompt_id, chosen=0, rejected=1) 与
 # (prompt_id, chosen=0, rejected=2)。chosen=0 是标注的"好答案"。
-# 每个 prompt 生成两个偏好对：(prompt_id, chosen=0, rejected=1) 与
-# (prompt_id, chosen=0, rejected=2)。chosen=0 是标注的"好答案"。
 _preference_tuples = []
 for prompt_id in range(num_prompts):
     _preference_tuples.append((prompt_id, 0, 1))
