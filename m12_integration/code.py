@@ -224,14 +224,26 @@ def greedy_acc(model: nn.Module) -> float:
 
 
 def best_of_n_accuracy(model: nn.Module, n: int, trials: int = 200) -> float:
-    """Best-of-N（拒绝采样）：每 prompt 采样 n 个 response，只要一个匹配 target 计成功。"""
+    """Best-of-N（真实拒绝采样）：每个 prompt 采样 **n 个** response，
+    只要 n 个里**任一**通过精确验证器（== target）即计该 prompt 成功。
+
+    N 越大，"至少采到一个正确解"的概率越高（1-(1-p)^N），故 N=1 < N=4 < N=16。
+    """
     successes = 0
     total = trials * num_prompts
     for _ in range(trials):
-        with torch.no_grad():
-            ctx = rollout(model, prompt_ids)
-            resp = ctx[:, PROMPT_LEN:]
-            successes += int((resp == target_ids).all(dim=-1).sum().item())
+        # 每个 prompt 采 n 个候选，验证器挑"已验证正确的"；任一命中即成功。
+        for j in range(n):
+            with torch.no_grad():
+                ctx = rollout(model, prompt_ids)
+                resp = ctx[:, PROMPT_LEN:]
+                ok = (resp == target_ids).all(dim=-1)      # [P] 精确验证器 0/1
+                j_correct = ok.sum().item()
+            if j == 0:
+                best = ok.clone()                                 # 逐 prompt 的"已验证正确"
+            else:
+                best = best | ok                                 # best over n 个候选
+        successes += int(best.sum().item())
     return successes / total
 
 
@@ -381,10 +393,24 @@ for update in range(ppo_updates):
         raw_broadcast[:, -1] = raw_reward                # RM 只加到最后 token
         token_reward = token_reward + raw_broadcast
 
-        # 深坑 ③：response mask 只覆盖 response 长度（prompt 位置不参与）。
-        response_mask = torch.ones(token_reward.size(0), RESPONSE_LEN,
-                                   device=device)
-        assert response_mask.size(1) == RESPONSE_LEN
+        # 深坑 ①/③：response mask 只覆盖 response 长度，prompt 位置不进入 PPO loss。
+        # 用「绝对位置 p >= PROMPT_LEN」直接从真实序列结构推导 mask，而非 hardcode：
+        # 若有人把 policy loss 扩到整个 context（深坑①复活）或把 PROMPT_LEN 改坏，
+        # 下面按位置推导的 mask 会当场在 prompt 区出现非 0、断言立即失败。
+        with torch.no_grad():
+            full_pos = torch.arange(MAX_LEN, device=device)
+            resp_pos_mask = (full_pos >= PROMPT_LEN).float()   # [MAX_LEN]，response 位置=1
+            # prompt 区必须全 0，response 区必须全 1——顺序正确（先 prompt 后 response）。
+            assert int(resp_pos_mask[:PROMPT_LEN].sum().item()) == 0, \
+                "response mask 错误地包含了 prompt 位置"
+            assert int(resp_pos_mask[PROMPT_LEN:].sum().item()) == RESPONSE_LEN, \
+                "response mask 未覆盖完整 response 长度"
+            # loss 实际消费的每-token logp 只到 response 区，宽度必须恰为 RESPONSE_LEN
+            # （response_log_probs 内部按绝对位置 PROMPT_LEN+k 取 token，不会碰 prompt）。
+            assert old_logp.size(1) == RESPONSE_LEN, \
+                "PPO loss 的 logp 覆盖了完整 context（prompt 进入了 loss）"
+        # token_reward / mask 都与 response 区对齐（[B, RESPONSE_LEN]）。
+        response_mask = torch.ones(token_reward.size(0), RESPONSE_LEN, device=device)
 
         # cheap n-step returns（token 级简化；正式 GAE 见 m06）。
         returns = token_reward.clone()
@@ -505,10 +531,19 @@ print(f"{'DPO':<10} {dpo_target_mean:<18.4f} {dpo_greedy:<10.3f}")
 
 print("\n============== Stage 5/5: Verifier / Best-of-N (v1.0) ==============")
 
+# 真实 best-of-N 的"随 N 单调上升"要在有散布的弱策略上才看得见：
+# 训练后策略（SFT→PPO→DPO）已近乎满分，最佳采样处处饱和，看不出 N-scaling。
+# 故用 SFT 弱策略演示 N=1 < N=4 < N=16 的单调性（与 m11 同款做法、诚实可见），
+# 再把已收敛的最终策略打出来作为"训练后已饱和"的对照。
+sft_weak_bon1 = best_of_n_accuracy(reference_policy, n=1)
+sft_weak_bon4 = best_of_n_accuracy(reference_policy, n=4)
+sft_weak_bon16 = best_of_n_accuracy(reference_policy, n=16)
 final_bon1 = best_of_n_accuracy(policy, n=1)
 final_bon4 = best_of_n_accuracy(policy, n=4)
-print(f"[验证器] Best-of-N（可验证正确率）: N=1 -> {final_bon1:.3f}, N=4 -> {final_bon4:.3f}"
-      f" | greedy_acc={dpo_greedy:.3f}")
+print(f"[验证器] Best-of-N（SFT 弱策略，真实采样 N 个候选验证器筛选）: "
+      f"N=1 -> {sft_weak_bon1:.3f}, N=4 -> {sft_weak_bon4:.3f}, N=16 -> {sft_weak_bon16:.3f}")
+print(f"[验证器] Best-of-N（训练后策略，对照/已饱和）: N=1 -> {final_bon1:.3f}, "
+      f"N=4 -> {final_bon4:.3f} | greedy_acc={dpo_greedy:.3f}")
 
 # ============================================================
 # 10. 机制级断言（诚实、单调提升，robust 不脆弱）
@@ -522,8 +557,13 @@ assert dpo_sft_prob < dpo_target_mean, (
     f"DPO 应使正确概率相比其 SFT 基线提升 {dpo_sft_prob:.4f} -> {dpo_target_mean:.4f}"
 )
 assert dpo_target_mean >= 0.85, f"DPO 后正确概率应大幅提升: {dpo_target_mean:.4f}"
+# Best-of-N 单调性要在弱策略上看：SFT 弱策略下 N 越大至少命中一次的正确率越高。
+assert sft_weak_bon4 >= sft_weak_bon1 and sft_weak_bon16 >= sft_weak_bon4, (
+    f"Best-of-N 应随 N 单调上升（SFT 弱策略）: bon1={sft_weak_bon1:.3f}, "
+    f"bon4={sft_weak_bon4:.3f}, bon16={sft_weak_bon16:.3f}"
+)
 assert final_bon1 >= 0.9 and final_bon4 >= 0.9, (
-    f"Best-of-N 应维持高可验证正确率: bon1={final_bon1:.3f}, bon4={final_bon4:.3f}"
+    f"Best-of-N 训练后策略应维持高可验证正确率: bon1={final_bon1:.3f}, bon4={final_bon4:.3f}"
 )
 assert first_total_loss is not None and last_total_loss < first_total_loss, (
     f"(policy+value) total_loss 应下降: {first_total_loss} -> {last_total_loss}"
@@ -551,10 +591,13 @@ check("RM 奖励只落在最后 response token", bool((raw_broadcast[:, :-1] == 
 # ⑦ KL 符号正确：非末 token reward 必须 <= ~0（只 -β·KL）
 check("KL 符号正确（-β·KL 惩罚，非加）", bool((token_reward[:, :-1] <= 1e-6).all().item()),
       "KL 符号写反：非末位 response token 未得到 -β·KL 惩罚")
-# ①/③ prompt token 不进入 PPO loss：response mask 只覆盖 response 长度
-check("Prompt token 不进入 PPO loss（response mask 长度正确）",
-      response_mask.size(1) == RESPONSE_LEN,
-      "response mask 错误地包含了 prompt/padding 位置")
+# ①/③ prompt token 不进入 PPO loss：按位置推导的 mask 在 prompt 区全 0、
+# response 区全覆盖，且 loss 消费的 logp 宽度恰为 RESPONSE_LEN（不含 prompt）。
+check("Prompt token 不进入 PPO loss（位置mask prompt区=0 且 response 全覆盖 + logp 宽度=RESPONSE_LEN）",
+      int(resp_pos_mask[:PROMPT_LEN].sum().item()) == 0
+      and int(resp_pos_mask[PROMPT_LEN:].sum().item()) == RESPONSE_LEN
+      and old_logp.size(1) == RESPONSE_LEN,
+      "response mask 覆盖了 prompt / 未盖满 response / 或 loss logp 扩到了完整 context")
 
 # ⑤/⑩：EOS 与 value bootstrap —— response 定长、无 EOS/padding，n-step return
 # 不会越过 response 边界（value 只在 response 位置取用）。上述长度断言已覆盖此坑。
@@ -571,6 +614,8 @@ if pit_failures:
 print("\n============== m12 收束（全链路 v0.0 → v1.0） ==============")
 print(f"正确回答平均概率: SFT={sft_target_mean:.4f} -> RL={rl_target_mean:.4f} "
       f"-> DPO={dpo_target_mean:.4f}")
-print(f"greedy_acc={dpo_greedy:.3f} | Best-of-N: N=1={final_bon1:.3f}, N=4={final_bon4:.3f}")
+print(f"greedy_acc={dpo_greedy:.3f} | Best-of-N(SFT弱): N=1={sft_weak_bon1:.3f}, "
+      f"N=4={sft_weak_bon4:.3f}, N=16={sft_weak_bon16:.3f} | "
+      f"训练后: N=1={final_bon1:.3f}, N=4={final_bon4:.3f}")
 print("[PASS] m12 integration: SFT→RM(BT)→PPO/KL→DPO→Best-of-N 端到端收束，"
       "深坑清单（response-mask / 奖励广播 / KL 符号 / old-logp 冻结 / advantage detach）全部通过")

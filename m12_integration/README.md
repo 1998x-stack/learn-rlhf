@@ -45,7 +45,7 @@ Stage 3 — PPO + KL (v0.4) :旧 logp 冻结 / response-mask / -β·KL / advanta
 Stage 4 — DPO (v0.8) 离线偏好直接调 : -logsigmoid(β·(logw_chosen - logl_rejected))，P(target)→0.9997
    │
    ▼   （per-stage 总结表：SFT / RL-PPO+KL / DPO 三列对比）
-Stage 5 — Verifier / Best-of-N (v1.0) 可验证正确性 + N=1→1.000 / N=4→0.999
+Stage 5 — Verifier / Best-of-N (v1.0) 真实采样 N 候选 + 验证器筛选：SFT 弱策略上 N=1 < N=4 < N=16 单调上升
    │
    ▼
 深坑清单验收（versions.md §11）：10 条坑编码为 7 条活跃断言，全过 → [PASS]
@@ -63,7 +63,7 @@ Stage 5 — Verifier / Best-of-N (v1.0) 可验证正确性 + N=1→1.000 / N=4�
 | **RM (BT)** | v0.1 | 学偏好：chosen>rejected | `rm_acc≈1.0`，冻结 |
 | **PPO+KL** | v0.4 | ratio-clip + `-β·KL` 上提正确率 | `P(target)→0.999` |
 | **DPO** | v0.8 | 无 RM，`-logsigmoid(β·(logw-logl))` | `P(target)→0.9997` |
-| **Verifier/Best-of-N** | v1.0 | 可验证正确性 + 推理时采样 | N=1 1.000 / N=4 0.999 |
+| **Verifier/Best-of-N** | v1.0 | 可验证正确性 + 推理时采样 | N=1 0.7x < N=4 0.9x < N=16 0.999（SFT 弱策略单调）；训练后已饱和 |
 
 ### SFT：带噪起点，而不是完美
 
@@ -106,7 +106,7 @@ DPO        0.9997             1.000
 
 ### Best-of-N：不训练也还能再榨
 
-最后一段（v1.0）做**推理时采样**：对同一 prompt 采 N 个候选，用精确验证器筛出正确答案。打印 `Best-of-N: N=1=1.000, N=4=0.999`——显示即使不更新策略，靠验证器筛采样也能把成功率滚得更稳。这就是 m11（可验证奖励）的核心手段，也是沿 v0.0→v1.0 的收尾。
+最后一段（v1.0）做**真实的推理时采样**：对同一 prompt 采 N 个候选，用精确验证器挑出"已验证正确"的那个；N 越大"至少采到一个正确解"的成功率越高（`1-(1-p)^N`）。为了让"随 N 单调上升"诚实可见，把演示放在有真实散布的 **SFT 弱策略**上（打印 `N=1 < N=4 < N=16`），再把已收敛（近乎满分、已饱和）的最终策略打出来做对照。这就是 m11（可验证奖励）的核心手段，也是沿 v0.0→v1.0 的收尾。
 
 ## Code Walkthrough
 
@@ -120,7 +120,7 @@ DPO        0.9997             1.000
 5. **Stage 3/5 PPO + KL（v0.4）**——`batch_size=128`、`ppo_epochs=3`、KL β=0.1、clip 0.2；两条 `check`（response 定长、chosen/rejected 长度一致）+ 五条深坑断言（advantage detach、old_logp 冻结、奖励不发广播、KL 符号、response mask）。
 6. **Stage 4/5 DPO（v0.8）**——用同一冻结 reference 做 π_ref，DPO_loss 滚动；`[DPO-standalone]` 打出 SFT→DPO 的 P + greedy。
 7. **per-stage 总结表**——打印 `stage / P(target) mean / greedy_acc` 三横三列。
-8. **Stage 5/5 Verifier / Best-of-N（v1.0）**——确定性验证器 + `Best-of-N` 两档采样。
+8. **Stage 5/5 Verifier / Best-of-N（v1.0）**——确定性验证器 + 真实 best-of-N（每 prompt 采 N 个候选、任一命中即成功）；在 SFT 弱策略上演示 N=1 < N=4 < N=16 单调上升，并打印训练后（已饱和）策略作对照。
 9. **深坑清单（versions.md §11）验收**——七条活跃断言逐条打印 `[检查] … : 通过`；任一失败则列出 `[深坑未过] …` 并以非 0 退出。全通过打印 `[PASS] … end-to-end 收束`。
 
 运行：
@@ -142,7 +142,7 @@ python -m m12_integration.code       # 从仓库根目录运行亦可
 | `old_logp 冻结且不重新计算` | ⑥ |
 | `RM 奖励只落在最后 response token` | ⑧ 奖励广播 |
 | `KL 符号正确（-β·KL 惩罚，非加）` | ⑦ |
-| `Prompt token 不进入 PPO loss（response mask 长度正确）` | ① |
+| `Prompt token 不进入 PPO loss（位置mask prompt区=0 且 response 全覆盖 + logp 宽度=RESPONSE_LEN）` | ① |
 
 > 坑③（EOS 后未 Mask）、⑤（reference 用了错误 tokenizer）、⑨（value bootstrap 越过 EOS）由**定长 + 无 EOS/padding** 的结构约定在代码层面一并兜住，故未单列活跃断言；把 `RESPONSE_LEN` / reference 来源改坏时，前述长度与 logp 对齐断言会先失败。
 
@@ -154,7 +154,7 @@ python -m m12_integration.code       # 从仓库根目录运行亦可
 - **定长 response（无 EOS/padding）**：`RESPONSE_LEN` 全程固定，让 response mask / 长度归一化 / value bootstrap 这些坑在**结构上**就不可行（长度断言兜住）。教学设计价值高于极简实现。
 - **RM 只给整段 score、分布由 PPO 广播**：m02（偏好打分）与 m04/m05（token 奖励分配）两个概念在**代码里物理分离**，避免"末位评分被所有 token 共享"这一最反直觉的坑在整链上复活。
 - **PPO epoch 共用同一份旧 rollout**：old 对数概率在 epoch 前一次性算出并冻结，天然不再有"过 epoch 重算"的空间。
-- **Best-of-N 在同一策略上直接验证**：展示"没更新策略也能提正确率"，与改进策略正交；沿 v0.0→v1.0 提供一条可验证奖励推理时的收尾。
+- **Best-of-N 在弱策略上演示单调性**：训练后的策略已近乎满分，best-of-N 处处饱和看不出"随 N 上升"（与 m11 相同）。故把"随 N 递增"的演示放在有散布的 SFT 弱策略上（更诚实地展示验证器筛选这一机制），再用已接近满分的最终策略打对照——展示"不更新策略也能提正确率"，与改进策略正交；沿 v0.0→v1.0 提供一条可验证奖励推理时的收尾。
 
 ## Going Deeper
 
