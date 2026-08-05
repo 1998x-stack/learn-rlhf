@@ -116,4 +116,4 @@ python m05_tiny_lm/code.py
 
 这是 `learn-rlhf` 里**第一次真正做到 token 级自回归语言模型 RLHF**（`v0.4`）：把 m01–m04 的"离散 action 选择"推广为"字符级 TinyGPT 在 Response 上逐 token 生成 + PPO"。它完整演示了 v0.4 的四大新机制——**response mask、token 级 log-prob/KL、序列奖励广播、token-level PPO**——并以 `[PASS]` 证明强化学习真的把"半对半错的 SFT 回答"纠正成了"受奖励的正确回答"。它是 m06（GAE/token 级完整 PPO）的**直接地基**：把这里的 `n-step return` 换成 GAE，就进入 v0.5。
 
-版本：**v0.4** · 运行：`python3 m05_tiny_lm/code.py`（CPU 秒级）
+版本：**v0.4** · 运行：`python m05_tiny_lm/code.py`（CPU 秒级）

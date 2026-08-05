@@ -136,4 +136,4 @@ python m07_multi_objective/code.py
 
 这是 `learn-rlhf` 里把"RLHF 奖励从一个标量变成一组目标"的拐点（`v0.6`）：在 m04 的离散 PPO 完整闭环上，把单一 Reward 换成 `w_h R_helpful + w_s R_safety + w_v R_verbosity`，并亲自演示两件生产必学的课——**Reward Hacking（代理涨、质量降，§11）** 与 **安全硬约束胜过软权重（§9 v0.7）**，最后量化评价 verbosity/position bias。`R_total` 每条 rollout 都断言**有界**；代理过度优化与硬约束胜出均用可测断言锁死；`[PASS]` 字样与断言一致性。
 
-版本：**v0.6 / v0.7 概念预览** · 运行：`python3 m07_multi_objective/code.py`（CPU 秒级）
+版本：**v0.6 / v0.7 概念预览** · 运行：`python m07_multi_objective/code.py`（CPU 秒级）

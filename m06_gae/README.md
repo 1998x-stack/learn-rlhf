@@ -128,4 +128,4 @@ python m06_gae/code.py
 
 m05 是 m06 的直接地基：把 m05 的"廉价 n-step" 换成 GAE，就进入 v0.5。
 
-版本：**v0.5** · 运行：`python3 m06_gae/code.py`（CPU 秒级）
+版本：**v0.5** · 运行：`python m06_gae/code.py`（CPU 秒级）

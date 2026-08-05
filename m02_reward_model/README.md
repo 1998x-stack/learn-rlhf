@@ -81,4 +81,4 @@ python m02_reward_model/code.py
 
 这是 `learn-rlhf` 序列里**"从人类偏好到数值奖励"**的模块：把 m01 的离散回答与**成对偏好**喂给 Bradley–Terry RM，训练出 `r_phi(x,y)`。它是 m03（REINFORCE + KL，用 RM 给采样回答打分）的**直接前序**——有了（用 accuracy ≥ 0.95 验证过的）reward 信号，后续强化学习才"有东西可最大化"。
 
-版本：**v0.1** · 运行：`python3 m02_reward_model/code.py`（CPU 秒级）
+版本：**v0.1** · 运行：`python m02_reward_model/code.py`（CPU 秒级）

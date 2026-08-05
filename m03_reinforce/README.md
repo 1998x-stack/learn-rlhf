@@ -94,4 +94,4 @@ python m03_reinforce/code.py
 
 这是 `learn-rlhf` 序列里**第一次真正用强化学习信号（RM 奖励 + KL）驱动策略** 的模块（`v0.2`）：复用了 m01 的 SFT 策略与 m02 的 RM，把"如何最大化奖励"落成可跑的 REINFORCE。它是 m04（PPO + Value，修 REINFORCE 的方差）的**直接前置**：这里暴露的问题，正是下一章要解的。
 
-版本：**v0.2** · 运行：`python3 m03_reinforce/code.py`（CPU 秒级）
+版本：**v0.2** · 运行：`python m03_reinforce/code.py`（CPU 秒级）

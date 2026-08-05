@@ -83,4 +83,4 @@ python m01_sft_policy/code.py
 
 这是 `learn-rlhf` 序列的**第一个真正写码模块**（`v0.0`）：建立离散 Action 级 `Policy` 并完成监督微调，产出可直接观测概率的参考策略。它是 m02（Reward Model 学习偏好）、m03（REINFORCE + KL）、m04（PPO MVP）…… 全部后续模块的**概念地基**。从这里开始，"生成的概率"第一次与"质量"挂钩。
 
-版本：**v0.0** · 运行：`python3 m01_sft_policy/code.py`（CPU 秒级）
+版本：**v0.0** · 运行：`python m01_sft_policy/code.py`（CPU 秒级）

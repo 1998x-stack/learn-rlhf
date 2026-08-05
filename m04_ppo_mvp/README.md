@@ -113,4 +113,4 @@ python m04_ppo_mvp/code.py
 
 这是 `learn-rlhf` 里**第一次完整画出"最小 RLHF 闭环"**的模块（`v0.3`）：把 m01 的 `Policy`、m02 的 `Reward Model`、m03 的 KL，加 **m04 新增的 Value Model + PPO（clipping、ratio、advantage 归一化、entropy bonus）** 串成一条 `SFT→RM→RL` 的可运行链路，后验策略概率收敛到正确回答（candidate 0 ≈ 1.0），演示了标准 RLHF 从"SFT 学到偏好不完美"到"人类偏好纠偏"的完整故事。它是 `m05/m06`（token 级 + GAE）的直接地基：把这里的"离散 PPO 单步 advantage"放大成 token 级自回归 PPO 就是后面的事。
 
-版本：**v0.3** · 运行：`python3 m04_ppo_mvp/code.py`（CPU 秒级）
+版本：**v0.3** · 运行：`python m04_ppo_mvp/code.py`（CPU 秒级）
