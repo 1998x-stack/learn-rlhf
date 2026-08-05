@@ -30,8 +30,6 @@ import os
 import re
 import sys
 
-import torch
-
 # 本文件名为 code.py，运行时会以其所在目录作为 sys.path[0]；
 # torch 内部会 `import code`（此处 code 是 Python 标准库的 code 模块），
 # 若本目录留在 sys.path 中，标准库的 code 会被本文件错误遮蔽导致导入崩溃。
@@ -39,6 +37,7 @@ import torch
 _here = os.path.dirname(os.path.abspath(__file__))
 sys.path = [p for p in sys.path if os.path.abspath(os.path.expanduser(p)) != _here]
 
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
