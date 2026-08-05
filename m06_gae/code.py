@@ -10,8 +10,10 @@ Run:  python m06_gae/code.py
     GAE:        A_t = Σ_{l=0}^{T-t-1} (γλ)^l · δ_{t+l}
 
 并补齐 v0.5 的工程组件：value clipping、advantage whitening、reward
-whitening、response 长度 mask、EOS 处理。用"GAE == 向量化重算"的
-atol=1e-4 断言与 advantage 有限性断言做自校验。
+whitening、response 长度 mask、EOS 处理；并在 PPO 更新步深化实现细节：
+mini-batch shuffle + 梯度累积 + 梯度裁剪、以及无效回答（raw_reward==0）在
+末 token 上的额外惩罚。用"GAE == 向量化重算"的 atol=1e-4 断言与 advantage
+有限性断言做自校验。
 """
 
 # --- v0.5: GAE + 完整 token-level PPO ---
@@ -321,6 +323,9 @@ policy_optimizer = torch.optim.Adam(policy.parameters(), lr=5e-3)
 value_optimizer = torch.optim.Adam(policy.value_head.parameters(), lr=5e-3)
 
 batch_size = 128
+MINIBATCH = 32              # 每个 mini-batch 的样本数
+num_minibatches = batch_size // MINIBATCH   # 每 epoch 的 mini-batch 数 = 4
+GRAD_CLIP_NORM = 0.5        # 每 epoch 汇总梯度后的 total-norm 裁剪
 ppo_updates = 500
 ppo_epochs = 1
 clip_epsilon = 0.2
@@ -330,6 +335,7 @@ entropy_coef = 0.001
 gamma = 0.9                 # 折扣因子 γ
 lam = 0.95                  # GAE 折中 λ
 BOOTSTRAP = 0.0             # 单回合 terminal episode 尾部 value
+INVALID_PENALTY = 0.5       # 无效回答（raw_reward==0）在末 token 上的额外惩罚
 
 # ============================================================
 # 7. 主流程：GAE 版 token-level PPO（v0.5）
@@ -371,7 +377,10 @@ def main() -> None:
 
             # reward whitening（v0.5）：先把原始 token 奖励归一化。
             token_reward = -kl_beta * tok_kl
-            token_reward[:, -1] += raw_reward
+            # invalid response penalty（v0.5）：raw_reward==0 的回答视为"无效"，
+            # 在末 token 上额外扣 INVALID_PENALTY，强化对"没答对 target"的惩罚。
+            #   final_r = raw_reward - INVALID_PENALTY*(1 - raw_reward)
+            token_reward[:, -1] += raw_reward - INVALID_PENALTY * (1.0 - raw_reward)
             token_reward = (token_reward - token_reward.mean()) / (
                 token_reward.std() + 1e-8
             )
@@ -398,47 +407,69 @@ def main() -> None:
         assert torch.isfinite(advantages).all(), "GAE advantage 含 NaN/inf"
         assert torch.isfinite(deltas).all(), "TD error 序列含 NaN/inf"
 
-        # ---- 7.3 token-level PPO ----
+        # ---- 7.3 token-level PPO（minibatch shuffle + 梯度累积 + 梯度裁剪）----
+        # v0.5 深化：不再一次性更新整个 batch，而是把 batch 打散成 num_minibatches
+        # 个 mini-batch（每 epoch 用 randperm 重新 shuffle），逐个 mini-batch 前向、
+        # 分摊 `total/num_minibatches` 的 loss 并 backward 累积梯度；一个 epoch 的
+        # 所有 mini-batch 累积完后，先 clip_grad_norm_ 再让 policy/value 各 step 一次。
+        # 真正的梯度累积：许多 mini-grad 加总成一次参数更新，等价于大 batch 更新，
+        # 但显著降低单步显存占用。
         for _ in range(ppo_epochs):
-            logits, values = policy(context)
-            curr_logp = response_log_probs(logits, context)
-
-            ratio = torch.exp(curr_logp - old_logp)
-            unclipped = ratio * advantages
-            clipped = (ratio.clamp(1.0 - clip_epsilon, 1.0 + clip_epsilon)
-                       * advantages)
-
-            dist = Categorical(
-                logits=logits[:, PROMPT_LEN - 1:PROMPT_LEN - 1 + RESPONSE_LEN, :]
-            )
-            entropy = dist.entropy().mean()
-
-            policy_loss = (-torch.min(unclipped, clipped).mean()
-                           - entropy_coef * entropy)
-
-            predicted = response_values(values)
-
-            # ---- value clipping（v0.5，原版 PPO 形式）----
-            # returns = raw GAE + V_old（上文还原）。把"预测的 value"裁剪到
-            # [V_old - ε, V_old + ε]，取裁剪前后二者中误差更小的一个作为
-            # 该位置的 value loss，防止 value 对优势/return 过拟合。
-            value_pred_clipped = old_values + (predicted - old_values).clamp(
-                -value_clip_eps, value_clip_eps
-            )
-            value_loss_unclipped = F.mse_loss(predicted, returns, reduction="none")
-            value_loss_clipped = F.mse_loss(value_pred_clipped, returns, reduction="none")
-            value_loss = torch.max(value_loss_unclipped, value_loss_clipped).mean()
-
-            total_loss = policy_loss + value_loss
+            order = torch.randperm(batch_size, device=device)  # minibatch shuffle
+            epoch_total = torch.zeros((), device=device)
             policy_optimizer.zero_grad()
             value_optimizer.zero_grad()
-            total_loss.backward()
+            for mb_i in range(num_minibatches):
+                idx = order[mb_i * MINIBATCH:(mb_i + 1) * MINIBATCH]
+
+                logits, values = policy(context[idx])
+                curr_logp = response_log_probs(logits, context[idx])
+                old_lp_mb = old_logp[idx]
+                adv_mb = advantages[idx]
+
+                ratio = torch.exp(curr_logp - old_lp_mb)
+                unclipped = ratio * adv_mb
+                clipped = (ratio.clamp(1.0 - clip_epsilon, 1.0 + clip_epsilon)
+                           * adv_mb)
+
+                dist = Categorical(
+                    logits=logits[:, PROMPT_LEN - 1:PROMPT_LEN - 1 + RESPONSE_LEN, :]
+                )
+                entropy = dist.entropy().mean()
+
+                policy_loss = (-torch.min(unclipped, clipped).mean()
+                               - entropy_coef * entropy)
+
+                predicted = response_values(values)
+
+                # ---- value clipping（v0.5，原版 PPO 形式）----
+                # returns = raw GAE + V_old（上文还原）。把"预测的 value"裁剪到
+                # [V_old - ε, V_old + ε]，取裁剪前后二者中误差更小的一个作为
+                # 该位置的 value loss，防止 value 对优势/return 过拟合。
+                old_val_mb = old_values[idx]
+                ret_mb = returns[idx]
+                value_pred_clipped = old_val_mb + (predicted - old_val_mb).clamp(
+                    -value_clip_eps, value_clip_eps
+                )
+                value_loss_unclipped = F.mse_loss(predicted, ret_mb, reduction="none")
+                value_loss_clipped = F.mse_loss(value_pred_clipped, ret_mb, reduction="none")
+                value_loss = torch.max(value_loss_unclipped, value_loss_clipped).mean()
+
+                total_loss = policy_loss + value_loss
+                # 梯度累积：每个 mini-batch 分摊 1/num_minibatches 的 loss 并 backward
+                (total_loss / num_minibatches).backward()
+                epoch_total = epoch_total + total_loss.detach()
+
+            # 梯度裁剪：RL 训练不稳定 -> 在一次更新前把累积梯度的 total-norm
+            # 截到 GRAD_CLIP_NORM（0.5），防止个别梯度尖峰扭曲整步更新。
+            nn.utils.clip_grad_norm_(policy.parameters(), max_norm=GRAD_CLIP_NORM)
             policy_optimizer.step()
             value_optimizer.step()
 
+            mean_total = epoch_total / num_minibatches
             if first_total_loss is None:
-                first_total_loss = total_loss.item()
-            last_total_loss = total_loss.item()
+                first_total_loss = mean_total.item()
+            last_total_loss = mean_total.item()
 
         if update % 50 == 0:
             mean_reward = raw_reward.mean().item()

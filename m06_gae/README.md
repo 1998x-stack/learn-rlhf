@@ -89,7 +89,7 @@ for t in reversed(range(T)):
 
 **Step 3｜`compute_gae_closed`** — 用**加和定义** `A_t = Σ_{l}(γλ)^l δ_{t+l}` 逐步展开成另一条独立实现（向量化张量），作为 sanity 重算路径。两条路径应 `atol<1e-4` 一致。
 
-**Step 4｜训练循环** — rollout 采样 → 冻结 old policy → 算 `token_reward`（序列奖励广播 `-βKL + RM`）→ reward whitening → GAE → advantage whitening → 一致性断言 → token-level PPO（ratio/clip/min）→ value clipping 的 value loss → 合并 backward、分别 step。
+**Step 4｜训练循环** — rollout 采样 → 冻结 old policy → 算 `token_reward`（序列奖励广播 `-βKL + RM`，`raw_reward==0` 的无效回答在末 token 再扣 `INVALID_PENALTY`）→ reward whitening → GAE → advantage whitening → 一致性断言 → token-level PPO（`randperm` 打散 batch 为 `num_minibatches` 个 mini-batch，逐 mini-batch 前向并对 `total_loss/num_minibatches` 做 `backward()` 累积梯度）→ 累积完先 `clip_grad_norm_(max_norm=0.5)` 再对 policy/value 一并 step。值函数依旧价值 `value clipping` 的 value loss。
 
 **Step 5｜[PASS]** — 断言：
 
@@ -113,6 +113,8 @@ python m06_gae/code.py
 - **`bootstrap=0` 是 terminal episode 的显式选择**：固定长度、到末 token 即终局，后面既无新 reward 也无新 value，`V(s_{T+1})=0`。这直接对应 `versions.md §11.6`"value bootstrap 越过 EOS"这条坑的正面答案。
 - **因果偏移沿用 m05 的约定**：`values` 与 `log_probs` 同取 `[PROMPT_LEN-1 : PROMPT_LEN-1+RESPONSE_LEN]`，保证 GAE 的 `V(s_t)` 和 `V(s_{t+1})` 在同一个"将要生成第 t 个 response token"的状态上定义。
 - **sys.path 剔除本目录**（同 m01–m05，规避 `code.py` 遮蔽标准库 `code`）；一次 backward 合并共享主体的 policy+value 梯度后分别 step。
+- **v0.5 深化：mini-batch shuffle + 梯度累积 + 梯度裁剪**——不再一次性更新整个 batch，而是每 epoch 用 `torch.randperm(128)` 打散索引，切成 `128//32 = 4` 个 mini-batch，逐个对分摊后的 `total_loss/num_minibatches` 做 `backward` 累积梯度；一个 epoch 累积完后统一 `clip_grad_norm_(max_norm=0.5)` 再让 policy/value 各 step 一次。这既是一步参数更新（梯度等价的整 batch 更新），又显著降低单步峰值显存，且 randperm 让不同 epoch/update 见过的样本顺序不同、削弱相关样本耦合；梯度裁剪把 RL 的梯度尖峰挡在一次更新之外。
+- **无效回答惩罚（invalid response penalty，v0.5）**——固定长度任务里 `raw_reward==0` 的回答视为"无效"（eager 解码没碰到 target）。在 GAE **之前**把末 token 奖励改写为 `raw_reward - INVALID_PENALTY*(1-raw_reward)`，让答错的样本除 RM=0 之外再被额外扣 `0.5`，进一步压低错误 response 的概率；对答对的样本（`raw_reward=1`）该式退回 `raw_reward`，不干扰奖励语义。
 
 ## Going Deeper
 
