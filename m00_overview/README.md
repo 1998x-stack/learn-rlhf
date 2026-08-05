@@ -27,7 +27,7 @@ Policy Optimization
 不一次性实现一整套分布式 RLHF。**从最简的离散回答级闭环入手**，沿着 `versions.md` §2 的完整流程逐级推进——先跑通"偏好 → 奖励 → 策略"的最小圈，再逐步升级到 token-level、GAE、生产分布式：
 
 ```text
-预训练 LM ⟶ SFT ⟶ 采样候答 + 人工比较 ⟶ Reward Model⟶ PPO（带 KL 约束）⟶ RLHF Policy
+预训练 LM ⟶ SFT ⟶ 采样候答 + 人工比较 ⟶ Reward Model ⟶ PPO（带 KL 约束）⟶ RLHF Policy
 ```
 
 这套流程对应 `versions.md` 的完整版本树（v0.0–v1.0）。本系列 m00–m12 从 **SFT（v0.0）** 一路推进到 **可验证奖励 / 推理 RL（v1.0）**，每条前置目标都是"看得懂、跑得通、能扩展"。
@@ -82,7 +82,7 @@ Prompt
 | **m11** | 可验证奖励 / 推理 RL | v1.0 | outcome/process reward、GRPO、best-of-N |
 | **m12** | 端到端收束 + 深坑清单 | 收束 | SFT→RM→RL→verifier 全链路 |
 
-## 核心推进原则（Key Design Principles）
+## Key Design Principles
 
 `versions.md`（§2–§3）把 RLHF 拆成**三个步骤，每一步都建立在上一步之上，任何一步都不建议跳级**：
 
