@@ -172,6 +172,22 @@ def main() -> None:
 
     print(f"\n[断言] chosen(candidate 0) 每个 prompt 概率均上升：{chosen_up}")
     print(f"[断言] rejected(candidate 1 & 2) 每个 prompt 概率均下降：{rejected_down}")
+
+    # ---- v0.8: 最终 per-prompt log 偏好比 —— DPO 损失的核心量 (versions.md §9) ----
+    # DPO 损失中心是 logπ_w - logπ_l = (logπθ−logπref)_chosen − (logπθ−logπref)_rejected。
+    # 训练后打印它，让学习者看到 DPO 目标在每个 prompt 上诱导出的 chosen-vs-rejected
+    # 偏好差距大小：正值 = chosen(答案0)比 rejected(答案1/2)更可能，正是期望方向。
+    # β 是 DPO 的"温度式"系数，控制策略 πθ 可以偏离参考 π_ref 多远（越大越帖着 π_ref）。
+    log_pi = per_action_log_prob(policy)
+    logref = per_action_log_prob(ref_policy)
+    print("\n[DPO] 最终 log 偏好比 (logπ_w - logπ_l) per prompt:")
+    for prompt_id, prompt in enumerate(prompts):
+        gap = (log_pi - logref)[prompt_id]  # 每个候选相对参考的对数比
+        logpi_w = gap[0]                     # chosen=0
+        logpi_l = gap[[1, 2]].mean()        # rejected=1,2 平均
+        print(f"  Prompt[{prompt_id}] {prompt}: "
+              f"logπ_w-logπ_l={((gap[0] - gap[1]) + (gap[0] - gap[2])) / 2:.3f}  (w=chosen0 >rejected={('✓' if (gap[0] - gap[1]) + (gap[0] - gap[2]) > 0 else '✗')})")
+
     print("[PASS] m09 dpo: 无 RM/rollout/value，直接在线下偏好对上优化 Policy，"
           "chosen 概率上升、rejected 概率下降")
 
