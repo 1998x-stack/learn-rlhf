@@ -25,6 +25,9 @@ import torch.nn.functional as F
 
 torch.manual_seed(42)
 
+# --- v0.8: 设备——GPU 可用则用 GPU，否则 CPU（与 m05–m08 一致）---
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 # --- v0.8: 与 m01 相同的离散数据集基准 ---
 prompts = [
     "1+1等于多少？",
@@ -40,9 +43,9 @@ responses = [
 ]
 num_prompts = len(prompts)
 num_actions = len(responses[0])
-prompt_ids = torch.arange(num_prompts)
+prompt_ids = torch.arange(num_prompts, device=device)
 # m01 设立的含噪声 SFT 标签：Prompt 1 与 Prompt 3 的示范并非最佳答案。
-sft_labels = torch.tensor([0, 1, 0, 1])
+sft_labels = torch.tensor([0, 1, 0, 1], device=device)
 
 # --- v0.8: 离线偏好对（chosen=0 才是正确答案）---
 # 每条记录 = (prompt_idx, chosen_idx, rejected_idx)：candidate 0 是"好回答"，
@@ -53,6 +56,7 @@ preference_pairs = [
 ] + [
     (p, 0, 2) for p in range(num_prompts)
 ]
+preference_pairs_t = torch.tensor(preference_pairs, dtype=torch.long, device=device)
 
 
 class PolicyModel(nn.Module):
@@ -109,12 +113,12 @@ def dpo_loss(log_pi: torch.Tensor, logref: torch.Tensor, beta: float) -> torch.T
     - log_pi: 当前策略 πθ 的 log 概率 [num_prompts, num_actions]
     - logref: 冻结参考策略 πref 的 log 概率 [num_prompts, num_actions]
     """
-    total = torch.tensor(0.0, dtype=torch.float32)
-    for prompt_idx, chosen, rejected in preference_pairs:
+    total = torch.tensor(0.0, dtype=torch.float32, device=device)
+    for prompt_idx, chosen, rejected in preference_pairs_t:
         logpi_w = log_pi[prompt_idx, chosen] - logref[prompt_idx, chosen]
         logpi_l = log_pi[prompt_idx, rejected] - logref[prompt_idx, rejected]
         total = total + -F.logsigmoid(beta * (logpi_w - logpi_l))
-    return total / len(preference_pairs)
+    return total / len(preference_pairs_t)
 
 
 def print_pair_prob(title: str, prob: torch.Tensor) -> None:
@@ -128,9 +132,9 @@ def print_pair_prob(title: str, prob: torch.Tensor) -> None:
 
 def main() -> None:
     # v0.8 Step 1: SFT 训练初始 Policy，并冻结一份作为参考策略 π_ref。
-    policy = PolicyModel(num_prompts=num_prompts, num_actions=num_actions)
+    policy = PolicyModel(num_prompts=num_prompts, num_actions=num_actions).to(device)
     sft_loss = sft_pretrain(policy)
-    ref_policy = PolicyModel(num_prompts=num_prompts, num_actions=num_actions)
+    ref_policy = PolicyModel(num_prompts=num_prompts, num_actions=num_actions).to(device)
     ref_policy.load_state_dict(policy.state_dict())
     for p in ref_policy.parameters():
         p.requires_grad_(False)          # π_ref 全程冻结
