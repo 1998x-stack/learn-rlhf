@@ -185,8 +185,9 @@ def main() -> None:
         gap = (log_pi - logref)[prompt_id]  # 每个候选相对参考的对数比
         logpi_w = gap[0]                     # chosen=0
         logpi_l = gap[[1, 2]].mean()        # rejected=1,2 平均
+        logratio = logpi_w - logpi_l        # logπ_w - logπ_l（与下方括号展开等价）
         print(f"  Prompt[{prompt_id}] {prompt}: "
-              f"logπ_w-logπ_l={((gap[0] - gap[1]) + (gap[0] - gap[2])) / 2:.3f}  (w=chosen0 >rejected={('✓' if (gap[0] - gap[1]) + (gap[0] - gap[2]) > 0 else '✗')})")
+              f"logπ_w-logπ_l={logratio:.3f}  (w=chosen0 >rejected={('✓' if logratio > 0 else '✗')})")
 
     print("[PASS] m09 dpo: 无 RM/rollout/value，直接在线下偏好对上优化 Policy，"
           "chosen 概率上升、rejected 概率下降")

@@ -326,6 +326,9 @@ batch_size = 128
 MINIBATCH = 32              # 每个 mini-batch 的样本数
 num_minibatches = batch_size // MINIBATCH   # 每 epoch 的 mini-batch 数 = 4
 GRAD_CLIP_NORM = 0.5        # 每 epoch 汇总梯度后的 total-norm 裁剪
+# 说明：value head 与 policy 共享同一主体，clip_grad_norm_ 作用在 policy.parameters()
+# 上，其实覆盖了"共享主体 + value head"的合并梯度 total-norm。0.5 是一次保守上限，
+# 避免 policy 或 value 任一方某步的梯度尖峰把整步更新带偏；若 value 拟合偏慢可适当调大。
 ppo_updates = 500
 ppo_epochs = 1
 clip_epsilon = 0.2
