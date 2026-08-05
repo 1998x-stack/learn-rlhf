@@ -305,10 +305,14 @@ def main() -> None:
           f"（ground-truth 由 eval 精确算出，无 RM/人工标注）")
 
     # ---- v1.0 Step 2: 含噪声 SFT 基线 ----
+    # 基线用 best-of-N N=1（300 次 trial 的经验 per-sample 正确率），
+    # 与 Step 5 的 best-of-N 行用同一估计器 —— 避免出现"两个语义相同的
+    # per-sample 正确率却因样本量不同数值不一"（如 0.315 vs 0.500）的误导。
     sft_policy, sft_state = sft_pretrain()
-    base_acc = sample_acc(sft_policy)
+    base_acc = best_of_n_accuracy(sft_policy, n=1)
     base_correct_prob = correct_prob_of(sft_policy)
-    print(f"\n[SFT 基线] 采样级可验证正确率 = {base_acc:.3f} ；P(正确候选) = {base_correct_prob:.3f}")
+    print(f"\n[SFT 基线] per-sample/best-of-N N=1（300-trial）可验证正确率 = {base_acc:.3f}"
+          f" ；P(正确候选) = {base_correct_prob:.3f}")
 
     # ---- v1.0 Step 3: GRPO 用可验证 outcome reward（无 Value 模型）训练 ----
     grpo_policy = PolicyModel(num_prompts=num_prompts, num_candidates=num_candidates).to(device)
@@ -325,6 +329,16 @@ def main() -> None:
     assert math.isfinite(first_reward) and math.isfinite(last_reward), "GRPO reward 非有限"
     adv_check = group_advantage(torch.tensor([[1.0, 0.0, 0.0]], device=device))
     assert adv_check.numel() == 3 and bool(torch.isfinite(adv_check).all()), "group advantage 非有限"
+    # 退化组断言：组内全对（std=0）时优势应≈0 → 冻结更新。全错组同理（对称），
+    # 用一个全-1 组再次确认该"std=0 → 冻结"行为被锁定，防止未来改动悄悄破坏它。
+    deg = group_advantage(torch.tensor([[1.0, 1.0, 1.0]], device=device))
+    assert torch.all(torch.abs(deg) < 1e-6), (
+        f"全对组优势应≈0（std=0 冻结），实际 {deg}"
+    )
+    deg_zeros = group_advantage(torch.tensor([[0.0, 0.0, 0.0]], device=device))
+    assert torch.all(torch.abs(deg_zeros) < 1e-6), (
+        f"全错组优势应≈0（std=0 冻结），实际 {deg_zeros}"
+    )
     assert trained_acc > base_acc + 0.15, (
         f"可验证正确率应显著上升：基线={base_acc:.3f} -> GRPO后={trained_acc:.3f}"
     )
@@ -337,12 +351,11 @@ def main() -> None:
     # 验证器把关"，是 v1.0 比"单样本采样"更高的一种用法。
     # 演示对象用 SFT 基线（非确定性、有真实散布）最能体现 N 越大成功概率越高；
     # 对近乎满分的 GRPO policy 也打印对照（此时各 N 已饱和，提升幅度自然变小）。
-    sft_bon1 = best_of_n_accuracy(sft_policy, n=1)
     sft_bon4 = best_of_n_accuracy(sft_policy, n=4)
     sft_bon16 = best_of_n_accuracy(sft_policy, n=16)
-    print(f"\nbest-of-N（SFT 弱策略，可验证筛选）: N=1 -> {sft_bon1:.3f}  "
+    print(f"\nbest-of-N（SFT 弱策略，可验证筛选）: N=1 -> {base_acc:.3f}  "
           f"N=4 -> {sft_bon4:.3f}  N=16 -> {sft_bon16:.3f}")
-    assert sft_bon16 > sft_bon4 > sft_bon1, "best-of-N 成功率应随 N 递增"
+    assert sft_bon16 > sft_bon4 > base_acc, "best-of-N 成功率应随 N 递增"
     assert sft_bon4 > base_acc, "best-of-N 应优于 单样本(per-sample) 采样级正确率"
 
     grpo_bon1 = best_of_n_accuracy(grpo_policy, n=1)
@@ -354,7 +367,7 @@ def main() -> None:
     print("[断言] GRPO 机制有效：正确候选的概率被组内相对优势推高"
           f"（{base_correct_prob:.3f} -> {trained_correct_prob:.3f}），优势为有限值")
     print("[断言] best-of-N / rejection sampling 提升：N 越大 至少命中一次正确的成功率越高"
-          f"（SFT弱策略 N=1:{sft_bon1:.3f} < N=4:{sft_bon4:.3f} < N=16:{sft_bon16:.3f}）")
+          f"（SFT弱策略 N=1:{base_acc:.3f} < N=4:{sft_bon4:.3f} < N=16:{sft_bon16:.3f}）")
     print("[PASS] m11 verifiable_rl: 以精确验证器为奖励源（无 RM、无 Value 模型），"
           "GRPO 用组内相对优势把采样正确率从 SFT 基线拉起，best-of-N 进一步放大")
 
