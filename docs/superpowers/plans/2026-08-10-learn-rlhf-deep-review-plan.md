@@ -34,12 +34,12 @@
 
 ## 阶段 3：审查并深化高级主题 m07–m11
 
-- [ ] m07：多目标聚合、硬约束、reward hacking 与 bias 指标。
-- [ ] m08：rollout/buffer/trainer 解耦、adaptive KL、checkpoint 恢复语义。
-- [ ] m09：DPO log-ratio、reference 冻结、chosen/rejected 诊断。
-- [ ] m10：反馈合成与 DPO 优化分层，移除死变量并增强衡器自检。
-- [ ] m11：GRPO 退化组、group advantage 与 Best-of-N 统计口径。
-- [ ] 实跑 m07–m11，并同步所有 README。
+- [x] m07：多目标聚合、硬约束、reward hacking 与 bias 指标。
+- [x] m08：rollout/buffer/trainer 解耦、adaptive KL、checkpoint 恢复语义。
+- [x] m09：DPO log-ratio、reference 冻结、chosen/rejected 诊断。
+- [x] m10：反馈合成与 DPO 优化分层，移除死变量并增强衡器自检。
+- [x] m11：GRPO 退化组、group advantage 与 Best-of-N 统计口径。
+- [x] 实跑 m07–m11，并同步相关 README。
 
 提交边界：多目标/生产/DPO/RLAIF/RLVR 高级链完成。
 

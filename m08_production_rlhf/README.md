@@ -28,7 +28,7 @@ Periodic Evaluation
 
 - **rollout 和训练没有解耦**：单进程里"边采样边更新"。真实系统里 rollout（推理：多 GPU / vLLM 服务）和训练（PPO：另一批 GPU）是**不同进程、不同设备**，二者之间必须有一个**缓冲**做异步数据管道。
 - **β 写死在代码里**：`versions.md §11.3` 说过，KL 太小 → reward hacking / 模式坍塌；KL 太大 → RLHF 失去效果。生产上用一个**自适应 KL 控制器**动态调 β，而不是手焊常数。
-- **没有 checkpoint**：几十万 GPU 时训练一旦掉线就全部重来。生产必须把 policy + optimizer + step 落盘成 checkpoint，支持断点续跑。
+- **没有 checkpoint**：长时间训练一旦掉线就全部重来。生产必须把 policy/value、optimizer、控制器动态状态与 step 一起落盘，支持断点续跑。
 
 > 一句话：m08 不再发明一个新 RL 算法，而是把 m01–m07 的 RL 核心包一层**生产系统件**（回放缓冲、自适应 KL、checkpoint），并把 rollout 与训练解耦成"生产者/消费者"流水线。教学上在**单 GPU 上仿真**这套架构。
 
@@ -75,16 +75,16 @@ Periodic Evaluation
    实际 KL < 目标 KL  →  减小 β（少惩罚 → 允许发散 → KL 升）
    ```
    β 用乘法式比例调节（`β ← β·(1 + kp·err)`，`err` 是近期平均 KL 相对目标的偏差加以 clamp），并夹在 `[β_min, β_max]`，防止一次失控。
-3. **Checkpoint**：`save_checkpoint` 把 `{model_state_dict, optimizer_state_dict, step, config}` `torch.save` 到 `checkpoints/m08_ckpt.pt`；`load_checkpoint` 用 `load_state_dict` 恢复。round-trip 必须**字节级复现**（同一输入 logits 全等）。
-4. **周期评估 + 断点续跑**：每若干迭代打印受奖候选 0 的概率（真实质量代理），最后落盘 → 用全新实例 load 回来 → 断言 logits 一致、恢复的 optimizer 能再走一步。
+3. **Checkpoint**：`save_checkpoint` 把 policy/value 权重、两套 Adam 状态、adaptive KL controller、step 与 config 保存到 `checkpoints/m08_ckpt.pt`；`load_checkpoint` 对称恢复。
+4. **周期评估 + 断点续跑**：每若干迭代打印受奖候选 0 的概率，最后用全新实例 load，断言 policy logits/value 输出一致、controller 状态一致、两套 optimizer 均能继续 step。
 
 ## How It Works
 
 **为什么 rollout 与训练解耦能加速生产？** 采样（rollout）只吃推理，PPO 更新只吃训练。两者对设备、批量的需求完全不同（推理要吞吐、训练要显存/通信）。解耦后可以让**很多 rollout worker 同时产生经验**，慢慢灌进 buffer，训练 side 按自己的节奏消费——这正是分布式系统的本质：生产者不需要等消费者，反之亦然。单 GPU 版里，这演成同一进程内"先 rollout 一批 feed buffer，再从 buffer sample 一个 minibatch"，但解耦的**因果结构**完全保留。
 
-**自适应 KL 平滑和收敛**：离散单步里，`kl = logπ_θ(a) - logπ_ref(a)` 对采样到的候选 a 估计。它瞬时噪声大（某个 prompt 卷到 action0，其它不卷），如果拿**瞬时 batch mean**去跳 β 会震荡甚至形成"极端双稳态"（β 大到 crush 策略 → KL 归零；消一消 → 策略又卷成一 → KL 爆炸）。所以控制器**追的是近期平均 KL**（EMA），再按它相对目标偏差驱动 β——这正是 §11.3"追踪近期平均 KL"的正解。结束时，近期 KL EMA 稳定在目标 1.0 的邻域（实测 ≈ 0.71），β 也从 1e-3 自适应爬到 ≈ 0.7；受奖候选 0 概率从 SFT 的 0.50 升到 0.67——训练"有效且受控"。
+**自适应 KL 平滑和收敛**：离散单步里，`kl = logπ_θ(a) - logπ_ref(a)` 对采样到的候选 a 估计。它瞬时噪声大，所以控制器**追的是近期平均 KL**（EMA），再按它相对目标偏差驱动 β。固定种子基线中，近期 KL EMA 落在目标 1.0 的邻域，β 从初值 `1e-3` 明显调整，受奖候选概率也高于 SFT；断言使用范围而不是绑定容易漂移的偶然小数。
 
-**checkpoint 为什么能"元级等价"**：`state_dict` 含 Adam 的动量和方差一阶/二阶矩。`torch.save` 是整棵 state 的 pickle，`load_state_dict` 复原后**权重与优化器状态都完全等价**，因此轻微一步 step 都能恢复，行为不漂移。断点续跑就是 `save(step) → load(step+1)`。
+**checkpoint 为什么不能只存 policy**：真正续训还依赖 critic、两套 Adam 的动量/方差，以及 adaptive KL 的 `β/EMA`。本章把这些都纳入 state dict，并检查恢复后输出与控制器状态一致、两套 optimizer 都有状态且能 step。为了保持教学代码紧凑，buffer、随机数发生器和数据游标尚未序列化，因此这是“trainer 核心状态恢复”，不是逐 bit 重放完整分布式作业。
 
 ## Code Walkthrough（版本锚点 `# v0.7`，同 versions.md §9 v0.7）
 
@@ -94,7 +94,7 @@ Periodic Evaluation
 
 **Step 3｜`AdaptiveKLController`** — `update(mean_kl)` 内做 EMA + 比例律调整 `beta` 并 `clamp`。`trace` 记录 `(kl, beta)` 手感。
 
-**Step 4｜`save_checkpoint / load_checkpoint`** — 落盘与恢复封装；`config` 里带 `target_kl` 元数据。
+**Step 4｜`save_checkpoint / load_checkpoint`** — 对称保存/恢复 policy、value、两套 optimizer、KL controller；`config` 里带 `target_kl` 元数据。
 
 **Step 5｜生产主循环** —
 
@@ -112,19 +112,19 @@ for update in range(PPO_UPDATES):
     beta = kl_controller.update(batch_kl_mean)         # 自适应 KL 驱动 β
     if update % 25 == 0: 评估 & 打印
 # 落盘 + round-trip 验证：[PASS]
-save_checkpoint(policy, policy_optimizer, step, {…})
-loaded = new PolicyModel(); load_checkpoint(loaded, new_optimizer)
-assert (policy(ids)-loaded(ids)).abs().max() < 1e-6     # logits 全等
-loaded_optimizer.backward().step()                       # 恢复的优化器可续训
+save_checkpoint(policy, value, policy_opt, value_opt, kl_controller, step, {…})
+load_checkpoint(new_policy, new_value, new_policy_opt, new_value_opt, new_controller)
+assert policy/value 输出一致且 controller.state_dict() 一致
+new_policy_opt.step(); new_value_opt.step()              # 两条训练状态都可续
 ```
 
 **Step 6｜[PASS] 断言** —
 
 1. Buffer：`sample_batch(17)` 各字段形状 `(17,)`、KL 有限。
-2. Checkpoint round-trip：同输入 logits 最大差 `<1e-6`（实测 `0.00e+00`）；恢复的 optimizer 能再 step（续训可行）。
+2. Checkpoint round-trip：同输入的 policy logits 与 value 输出最大差都 `<1e-6`；controller 状态完全一致；两套恢复后的 optimizer 都能再 step。
 3. CK 元数据：`ckpt_meta["step"] == PPO_UPDATES`。
-4. KL：近期平均 KL 落在目标 ×[0.5,2.0] 邻域（实测 0.71）且 max < 3.0（不爆炸）；`β` 确实被自适应调节（1e-3 → 0.70）。
-5. RL 有效：候选0概率 SFT 0.50 → RL 0.67。
+4. KL：近期平均 KL 落在目标 ×[0.5,2.0] 邻域且 max < 3.0（不爆炸）；`β` 确实被自适应调节。
+5. RL 有效：候选 0 概率相比 SFT 提升至少 0.05。
 
 运行：
 
@@ -137,7 +137,7 @@ python m08_production_rlhf/code.py
 - **一条 `ReplayBuffer` 写死了"生产者-消费者"边界**：仿真真实分布式 rollout⇄训练的两个进程通过 buffer 传经验，且用 `cap` 限长丢最旧——这既是教学点睛（为什么生产系统要 buffer），也让单 GPU 版诚实反映缓冲语义。
 - **自适应 KL 用 EMA + 比例律，而非 bang-bang 硬切**：离散 batch 的瞬时 KL 噪声大，直接用"KL>target 就 β×1.5、KL<target 就 β÷1.5"会在 β 上限/下限来回打钟，形成 β 双稳态极限环（策略一会儿崩回 ref、一会儿崩成一）。EMA 追踪"近期平均 KL"（正对应 §11.3）后，调节平滑、能落在目标邻域。这是本模块最容易翻车的角落。
 - **β 的 `[β_min, β_max]` 动态范围要匹配 reward 强度**：若奖励梯度 >> β·KL 上限，策略会无视 β、直接崩到受奖动作（KL 爆炸）；反过来 β 上限太大又瞬间把策略钉死回 ref（chosen 掉回 0.5、KL≈0）。本模块把 Reward Model 训到"温和"水平（80 轮 BT），并设 `β_max≈3`，才在离散任务里获得一个真实、可平衡的稳态点。
-- **checkpoint 保存 state_dict + optimizer_state**（权威），而不是只存原始权重：恢复后才能继续 step，才是真正的"续跑"，而不仅仅是"载权重推理"。
+- **checkpoint 保存完整 trainer 核心状态**：policy/value 权重、两套 optimizer 与 KL controller 缺一不可；只恢复 policy 只能推理，无法声称训练动态连续。
 - **sys.path 剔除本目录**（同 m01–m07，规避 `code.py` 遮蔽标准库 `code`）。
 
 ## Going Deeper

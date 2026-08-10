@@ -196,7 +196,9 @@ def group_advantage(rewards_group: torch.Tensor, eps: float = 1e-8) -> torch.Ten
     若组内全部相同（全 0 或全 1），std=0 → advantage≈0 → 不更新（正确行为）。
     """
     mean = rewards_group.mean(dim=-1, keepdim=True)
-    std = rewards_group.std(dim=-1, keepdim=True)
+    # correction=0 使用总体标准差；即使 group size=1 也得到 0，而不是默认
+    # Bessel correction 下的 NaN。单元素/全同奖励组都应产生零优势并冻结更新。
+    std = rewards_group.std(dim=-1, keepdim=True, correction=0)
     return (rewards_group - mean) / (std + eps)
 
 
@@ -342,6 +344,10 @@ def main() -> None:
     deg_zeros = group_advantage(torch.tensor([[0.0, 0.0, 0.0]], device=device))
     assert torch.all(torch.abs(deg_zeros) < 1e-6), (
         f"全错组优势应≈0（std=0 冻结），实际 {deg_zeros}"
+    )
+    singleton = group_advantage(torch.tensor([[1.0]], device=device))
+    assert torch.isfinite(singleton).all() and torch.all(torch.abs(singleton) < 1e-6), (
+        f"单元素组也应给出有限零优势，实际 {singleton}"
     )
     assert trained_acc > base_acc + 0.15, (
         f"可验证正确率应显著上升：基线={base_acc:.3f} -> GRPO后={trained_acc:.3f}"

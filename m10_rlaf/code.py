@@ -270,7 +270,7 @@ def main() -> None:
           f"可执行衡器 {exec_ok}/{num_prompts}")
 
     sft_policy = PolicyModel(num_prompts=num_prompts, num_actions=num_actions).to(device)
-    sft_loss = sft_pretrain(sft_policy)
+    sft_pretrain(sft_policy)
     sft_state = {k: v.detach().clone() for k, v in sft_policy.state_dict().items()}
     base_acc = policy_accuracy(sft_policy)
 

@@ -26,10 +26,10 @@ Run:  python m08_production_rlhf/code.py
 2. AdaptiveKLController（§11.3）：跟踪近期平均 KL，KL > 目标 → 增大 β，
    KL < 目标 → 减小 β，让 KL 稳定在 target 附近，既不 reward-hacking（太小）
    也不失效（太大）。
-3. Checkpoint save/load：torch.save dict（policy/optimizer state、step、
-   config），torch.load + load_state_dict 恢复，支持断点续训。
-4. 周期评估 + 断点恢复：每 K 次迭代保存一次 checkpoint，最后 load 回来验证
-   round-trip 一致（logits allclose + 恢复的 optimizer 可再走一步）。
+3. Checkpoint save/load：同时保存 policy/value、两套 optimizer、adaptive KL
+   controller、step 与 config；torch.load + load_state_dict 恢复训练状态。
+4. 周期评估 + 断点恢复：每 K 次迭代输出评估刻度，训练末尾保存 checkpoint，
+   再 load 验证 policy/value/controller round-trip 与两套 optimizer 续训能力。
 """
 
 # --- v0.7: 生产级 RLHF 架构 ---
@@ -297,6 +297,25 @@ class AdaptiveKLController:
         self.trace.append((float(self.ema), float(self.beta)))
         return self.beta
 
+    def state_dict(self) -> dict:
+        """返回可 checkpoint 的控制器状态（含 EMA 与诊断轨迹）。"""
+        return {
+            "target": self.target,
+            "beta": self.beta,
+            "beta_min": self.beta_min,
+            "beta_max": self.beta_max,
+            "kp": self.kp,
+            "ema": self.ema,
+            "ema_decay": self.ema_decay,
+            "trace": list(self.trace),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """恢复控制器动态状态，避免 resume 后 β/EMA 突然回到初值。"""
+        for key in ("target", "beta", "beta_min", "beta_max", "kp", "ema", "ema_decay"):
+            setattr(self, key, state[key])
+        self.trace = [tuple(item) for item in state["trace"]]
+
 
 # ============================================================
 # 6. 生产系统件 C：Checkpoint save/load（断点续跑）
@@ -308,17 +327,23 @@ CKPT_PATH = os.path.join(CKPT_DIR, "m08_ckpt.pt")
 
 def save_checkpoint(
     policy: nn.Module,
-    optimizer: torch.optim.Optimizer,
+    value_model: nn.Module,
+    policy_optimizer: torch.optim.Optimizer,
+    value_optimizer: torch.optim.Optimizer,
+    controller: AdaptiveKLController,
     step: int,
     config: dict,
     path: str = CKPT_PATH,
 ) -> None:
-    """policy 权重 + optimizer 状态 + 元数据打成 dict，torch.save。"""
+    """保存足以恢复本教学 trainer 的模型、优化器、控制器与元数据。"""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save(
         {
-            "model_state_dict": policy.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
+            "policy_state_dict": policy.state_dict(),
+            "value_state_dict": value_model.state_dict(),
+            "policy_optimizer_state_dict": policy_optimizer.state_dict(),
+            "value_optimizer_state_dict": value_optimizer.state_dict(),
+            "kl_controller_state_dict": controller.state_dict(),
             "step": step,
             "config": config,
         },
@@ -328,13 +353,19 @@ def save_checkpoint(
 
 def load_checkpoint(
     policy: nn.Module,
-    optimizer: torch.optim.Optimizer,
+    value_model: nn.Module,
+    policy_optimizer: torch.optim.Optimizer,
+    value_optimizer: torch.optim.Optimizer,
+    controller: AdaptiveKLController,
     path: str = CKPT_PATH,
 ) -> dict:
-    """加载 checkpoint 并恢复 policy 权重与 optimizer 状态，返回元数据 dict。"""
+    """恢复模型、两套 optimizer 与 KL controller，返回完整 checkpoint。"""
     ckpt = torch.load(path, map_location=device, weights_only=False)
-    policy.load_state_dict(ckpt["model_state_dict"])
-    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    policy.load_state_dict(ckpt["policy_state_dict"])
+    value_model.load_state_dict(ckpt["value_state_dict"])
+    policy_optimizer.load_state_dict(ckpt["policy_optimizer_state_dict"])
+    value_optimizer.load_state_dict(ckpt["value_optimizer_state_dict"])
+    controller.load_state_dict(ckpt["kl_controller_state_dict"])
     return ckpt
 
 
@@ -450,27 +481,45 @@ def main() -> None:
             )
 
     # ---- 8. 落盘 + round-trip 验证（生产环境断点续跑）----
-    save_checkpoint(policy, policy_optimizer, PPO_UPDATES, {"target_kl": TARGET_KL})
+    save_checkpoint(
+        policy, value_model, policy_optimizer, value_optimizer, kl_controller,
+        PPO_UPDATES, {"target_kl": TARGET_KL},
+    )
 
     # --- 8.1 用"全新"模型实例 load，验证权重与优化器都可恢复 ---
     loaded_policy = PolicyModel(num_prompts, num_actions).to(device)
-    loaded_optimizer = torch.optim.Adam(loaded_policy.parameters(), lr=3e-3)
-    ckpt_meta = load_checkpoint(loaded_policy, loaded_optimizer)
+    loaded_value = ValueModel(num_prompts).to(device)
+    loaded_policy_optimizer = torch.optim.Adam(loaded_policy.parameters(), lr=3e-4)
+    loaded_value_optimizer = torch.optim.Adam(loaded_value.parameters(), lr=3e-4)
+    loaded_controller = AdaptiveKLController(target_kl=TARGET_KL, init_beta=BETA_INIT)
+    ckpt_meta = load_checkpoint(
+        loaded_policy, loaded_value, loaded_policy_optimizer, loaded_value_optimizer,
+        loaded_controller,
+    )
 
     # --- 8.2 round-trip 断言（1）：同一输入 logits 全等 ---
     with torch.no_grad():
         logits_orig = policy(prompt_ids)
         logits_load = loaded_policy(prompt_ids)
-    max_diff = (logits_orig - logits_load).abs().max().item()
-    assert max_diff < 1e-6, f"round-trip logits 不一致 max|x|={max_diff}"
+        values_orig = value_model(prompt_ids)
+        values_load = loaded_value(prompt_ids)
+    policy_max_diff = (logits_orig - logits_load).abs().max().item()
+    value_max_diff = (values_orig - values_load).abs().max().item()
+    assert policy_max_diff < 1e-6, f"policy round-trip 不一致 max|x|={policy_max_diff}"
+    assert value_max_diff < 1e-6, f"value round-trip 不一致 max|x|={value_max_diff}"
+    assert loaded_controller.state_dict() == kl_controller.state_dict(), "KL controller 状态未恢复"
 
     # --- 8.3 round-trip 断言（2）：恢复的 optimizer 能再走一步（可续训）---
     batch_r = buffer.sample_batch(MINIBATCH)
     lg = loaded_policy(batch_r.prompt_id)
-    cont_loss = -Categorical(logits=lg).log_prob(batch_r.action).mean()
-    loaded_optimizer.zero_grad()
-    cont_loss.backward()
-    loaded_optimizer.step()  # 恢复 state 后能正常 step => 续训可恢复。
+    cont_policy_loss = -Categorical(logits=lg).log_prob(batch_r.action).mean()
+    loaded_policy_optimizer.zero_grad()
+    cont_policy_loss.backward()
+    loaded_policy_optimizer.step()
+    cont_value_loss = F.mse_loss(loaded_value(batch_r.prompt_id), batch_r.reward)
+    loaded_value_optimizer.zero_grad()
+    cont_value_loss.backward()
+    loaded_value_optimizer.step()
 
     # ---- 9. Buffer 形状断言 ----
     sb = buffer.sample_batch(17)
@@ -496,7 +545,8 @@ def main() -> None:
 
     print(f"\n候选0平均概率：SFT={sft_chosen:.4f} -> RL={final_ev:.4f}")
     print(f"近期平均KL={mean_kl:.4f}，目标={TARGET_KL}，β={final_beta:.3e}")
-    print(f"checkpoint round-trip logits 最大差={max_diff:.3e} (<1e-6)，续训可继续 step")
+    print(f"checkpoint round-trip: policy={policy_max_diff:.3e}, value={value_max_diff:.3e} "
+          "(<1e-6)，两套 optimizer 与 KL controller 均可恢复")
 
     # (honest) 灾害断言：自适应 β 让 KL 不爆炸（近期 max 有界）
     assert max(recent_kls) < 3.0, f"KL 失控 max={max(recent_kls)}"
@@ -512,6 +562,9 @@ def main() -> None:
     assert beta_adapted, "自适应 KL 控制器应改变 β"
     # checkpoint 元数据可读。
     assert ckpt_meta["step"] == PPO_UPDATES, "checkpoint 元数据 step 不正确"
+    assert len(loaded_policy_optimizer.state) > 0 and len(loaded_value_optimizer.state) > 0, (
+        "checkpoint 未恢复 Adam 状态"
+    )
 
     print(
         f"[PASS] m08 production rlhf (v0.7): rollout⇄buffer⇄trainer 解耦闭环，"
