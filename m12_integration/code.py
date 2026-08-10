@@ -329,8 +329,9 @@ print(f"[RM] BT 收敛；偏好对上 chosen>rejected 准确率 = {rm_acc:.3f}")
 
 print("\n============== Stage 3/5: PPO + KL (v0.4) ==============")
 
-policy_optimizer = torch.optim.Adam(policy.parameters(), lr=5e-3)
-value_optimizer = torch.optim.Adam(policy.value_head.parameters(), lr=5e-3)
+# policy trunk、LM head 与 value head 共用一张参数图，也只由一套 Adam 管理；
+# value_head 已包含在 policy.parameters() 中，不能再交给第二套 optimizer 重复 step。
+optimizer = torch.optim.Adam(policy.parameters(), lr=5e-3)
 
 batch_size = 128
 ppo_updates = 400
@@ -352,11 +353,13 @@ first_total_loss: float | None = None
 last_total_loss = 0.0
 policy_loss = torch.tensor(0.0, device=device)
 value_loss = torch.tensor(0.0, device=device)
+verifier_reward = torch.zeros(1, device=device)
 # 供深坑清单校验读取的 rollout 中间量（在 update 循环内会被真实赋值）。
 advantages = torch.zeros(1, device=device)
 old_logp = torch.zeros(1, device=device)
 token_reward = torch.zeros(0, device=device)
 raw_broadcast = torch.zeros(0, device=device)
+kl_penalty = torch.zeros(0, device=device)
 response_mask = torch.zeros(0, device=device)
 
 policy.train()
@@ -367,7 +370,10 @@ for update in range(ppo_updates):
     with torch.no_grad():
         context = rollout(policy, prompt_batch)
         resp_ids = context[:, PROMPT_LEN:]
-        raw_reward = exact_match_reward(sampled_prompts, resp_ids)
+        # 经典 RLHF 路径：PPO 的训练信号来自上一步训练并冻结的 Reward Model。
+        # 精确 verifier 只作为独立评估指标，绝不混入 policy loss。
+        raw_reward = reward_model.score(context)
+        verifier_reward = exact_match_reward(sampled_prompts, resp_ids)
 
     # ---- 6.2 冻结采样时刻 old policy（ratio 分母）+ old_logp / ref_logp / value ----
     old_policy = copy.deepcopy(policy)
@@ -387,10 +393,10 @@ for update in range(ppo_updates):
         #   非末位 response token 只承担 -kl_beta·KL（惩罚）；
         #   末位 response token 额外承接 RM Reward。
         # 深坑 ⑦（KL 符号）：reward = r - β·KL（减）。若写反成 +，下方 [检查] 立即失败。
-        token_reward = -kl_beta * tok_kl                 # 所有 response token 先只 -KL
-        raw_broadcast = torch.zeros_like(token_reward)
+        kl_penalty = -kl_beta * tok_kl                   # 单独保留，供符号恒等式验收
+        raw_broadcast = torch.zeros_like(kl_penalty)
         raw_broadcast[:, -1] = raw_reward                # RM 只加到最后 token
-        token_reward = token_reward + raw_broadcast
+        token_reward = kl_penalty + raw_broadcast
 
         # 深坑 ①/③：response mask 只覆盖 response 长度，prompt 位置不进入 PPO loss。
         # 用「绝对位置 p >= PROMPT_LEN」直接从真实序列结构推导 mask，而非 hardcode：
@@ -441,18 +447,18 @@ for update in range(ppo_updates):
         value_loss = F.mse_loss(predicted, returns)
 
         total_loss = policy_loss + value_loss
-        policy_optimizer.zero_grad()
-        value_optimizer.zero_grad()
+        optimizer.zero_grad()
         total_loss.backward()
-        policy_optimizer.step()
-        value_optimizer.step()
+        nn.utils.clip_grad_norm_(policy.parameters(), max_norm=0.5)
+        optimizer.step()
 
         if first_total_loss is None:
             first_total_loss = total_loss.item()
         last_total_loss = total_loss.item()
 
     if update % 50 == 0:
-        print(f"  ppo update={update:03d} | reward={raw_reward.mean().item():.3f}"
+        print(f"  ppo update={update:03d} | rm_reward={raw_reward.mean().item():.3f}"
+              f" | verifier={verifier_reward.mean().item():.3f}"
               f" | policy_loss={policy_loss.item():.4f} | value_loss={value_loss.item():.4f}")
 
 rl_target_prob = target_prob(policy)
@@ -588,10 +594,9 @@ check("old_logp 冻结且不重新计算", not old_logp.requires_grad,
 check("RM 奖励只落在最后 response token", bool((raw_broadcast[:, :-1] == 0).all().item()),
       "RM 奖励被错误地广播到了所有 token")
 # ⑦ KL 符号正确：sampled log-ratio 本身可正可负，不能用 reward 正负判断；
-# 直接检查构造恒等式 token_reward - raw_reward == -β * sampled_log_ratio。
-kl_contribution = token_reward - raw_broadcast
+# 直接检查构造时保留的 KL 项；避免从较大的 RM reward 中相减造成浮点消减误差。
 check("KL 符号正确（reward 的 KL 项严格等于 -β·log-ratio）",
-      bool(torch.allclose(kl_contribution, -kl_beta * tok_kl, atol=1e-7, rtol=1e-6)),
+      bool(torch.allclose(kl_penalty, -kl_beta * tok_kl, atol=1e-7, rtol=1e-6)),
       "KL 项不等于 -β·(old_logp-ref_logp)，可能符号写反或混入其他奖励")
 # ①/③ prompt token 不进入 PPO loss：按位置推导的 mask 在 prompt 区全 0、
 # response 区全覆盖，且 loss 消费的 logp 宽度恰为 RESPONSE_LEN（不含 prompt）。

@@ -33,6 +33,42 @@ pip install -r requirements.txt
 python m04_ppo_mvp/code.py
 ```
 
+## 如何学习这套教程
+
+这不是一个不断 import 前章代码的应用，而是 13 个**独立、递进、可运行**的教学切片。建议按三段阅读：
+
+1. **偏好学习核心（m00–m04）**：先建立全景，再依次理解 SFT、Bradley–Terry RM、REINFORCE+KL 与离散 PPO。
+2. **token 级与系统化（m05–m08）**：把一个回答级 action 展开为自回归 token，加入 GAE、多目标奖励，再观察 rollout/buffer/trainer/checkpoint 的生产架构仿真。
+3. **PPO 之外（m09–m12）**：用 DPO 直接优化离线偏好，比较 AI/规则反馈与可验证奖励，最后在 m12 对照整条链路和常见深坑。
+
+每章先读 README 的 Problem/Solution，再运行代码并对照 `[PASS]` 前的指标与机制断言。`versions.md` 定义能力轴；模块 README 与代码中的 `# vX.Y` 都应服从它。
+
+## 验证
+
+单章直接从仓库根目录运行：
+
+```bash
+python m05_tiny_lm/code.py
+python m11_verifiable_rl/code.py
+```
+
+全量验收不依赖 pytest；依次运行 `m01`–`m12`，每个脚本都必须退出 0 并打印 `[PASS]`。只做语法检查时：
+
+```bash
+for f in m*/code.py; do
+  python -c "import ast; ast.parse(open('$f').read())"
+done
+```
+
+## 教学边界
+
+- m01–m04 使用离散候选回答，突出目标函数；m05/m06/m12 才进入字符级自回归与 token-level loss。
+- m05/m06 的精确匹配是规则奖励函数，不是训练出来的 RM；m12 才显式把 BT Reward Model 接入 PPO，并把 verifier 留作独立评估。
+- m08 是单进程的生产架构仿真，不等同于真实 vLLM/SGLang rollout、FSDP/ZeRO 或多机容错；checkpoint 也明确不保存 buffer/RNG/数据游标。
+- 全仓使用小型合成数据和固定种子，目标是证明机制与失败模式，不是报告可外推的模型质量。
+
+设计与分阶段优化记录见 [深度审查设计](docs/superpowers/specs/2026-08-10-learn-rlhf-deep-review-design.md) 与 [实施计划](docs/superpowers/plans/2026-08-10-learn-rlhf-deep-review-plan.md)。
+
 ## 链接
 
 - [m00_overview/](m00_overview/)

@@ -40,9 +40,9 @@ Stage 2 — Reward Model (v0.1) Bradley–Terry，在偏好对上学会 chosen>r
    │
    ▼
 Stage 3 — PPO + KL (v0.4) :旧 logp 冻结 / response-mask / -β·KL / advantage detach / 序列奖励广播
-   │         P(target) 0.75 → 0.999
+   │         P(target) 约 0.74 → 0.87（RM reward 驱动，verifier 只评估）
    ▼
-Stage 4 — DPO (v0.8) 离线偏好直接调 : -logsigmoid(β·(logw_chosen - logl_rejected))，P(target)→0.9997
+Stage 4 — DPO (v0.8) 离线偏好直接调 : -logsigmoid(β·(logw_chosen - logl_rejected))，P(target)→0.999
    │
    ▼   （per-stage 总结表：SFT / RL-PPO+KL / DPO 三列对比）
 Stage 5 — Verifier / Best-of-N (v1.0) 真实采样 N 候选 + 验证器筛选：SFT 弱策略上 N=1 < N=4 < N=16 单调上升
@@ -51,7 +51,7 @@ Stage 5 — Verifier / Best-of-N (v1.0) 真实采样 N 候选 + 验证器筛选�
 深坑清单验收（versions.md §11）：10 条坑编码为 7 条活跃断言，全过 → [PASS]
 ```
 
-最小闭环是：**SFT 起步 → (RM + Reference) 冻结 → PPO+KL 在线调 → DPO 离线备选项 → 验证器 Best-of-N 兜底**。五阶段各用一个目标函数，七条活跃 `[检查]` 把 `versions.md §11` 的坑逐一钉死。
+最小闭环是：**SFT 起步 → (RM + Reference) 冻结 → PPO+KL 在线调 → DPO 离线备选项 → 验证器 Best-of-N 兜底**。五阶段各用一个目标函数，机制级 `[检查]` 把 `versions.md §11` 的关键坑逐一钉死。
 
 ## How It Works
 
@@ -61,8 +61,8 @@ Stage 5 — Verifier / Best-of-N (v1.0) 真实采样 N 候选 + 验证器筛选�
 |---|---|---|---|
 | **SFT** | v0.0 | 让策略先能产出 SFT 带噪答案 | `P(target)≈0.75`（不完美起点） |
 | **RM (BT)** | v0.1 | 学偏好：chosen>rejected | `rm_acc≈1.0`，冻结 |
-| **PPO+KL** | v0.4 | ratio-clip + `-β·KL` 上提正确率 | `P(target)→0.999` |
-| **DPO** | v0.8 | 无 RM，`-logsigmoid(β·(logw-logl))` | `P(target)→0.9997` |
+| **PPO+KL** | v0.4 | 冻结 RM score + ratio-clip + `-β·KL` | `P(target)` 从约 0.74 提升到约 0.87 |
+| **DPO** | v0.8 | 无 RM，`-logsigmoid(β·(logw-logl))` | `P(target)→0.999` |
 | **Verifier/Best-of-N** | v1.0 | 可验证正确性 + 推理时采样 | N=1 0.7x < N=4 0.9x < N=16 0.999（SFT 弱策略单调）；训练后已饱和 |
 
 ### SFT：带噪起点，而不是完美
@@ -71,7 +71,7 @@ Stage 5 — Verifier / Best-of-N (v1.0) 真实采样 N 候选 + 验证器筛选�
 
 ### Reward Model：偏好对打分，而不是逐 token 广播
 
-RM 是独立的 `RewardModel`（一个外接 feedforward head），只在输入的**整段**上给一个 score。关键的设计约束是：**RM 只负责打整段分数，逐 token 的 reward 分布由 PPO 的"序列奖励广播"单独决定**——从而把 m02 的"RM 给偏好对打分"与 m04/m05 的"奖励广播到哪个 token"两个概念彻底分开。
+RM 是独立的 `RewardModel`（内部复用 TinyLM 的 value head），只在输入的**整段**上给一个 score。PPO rollout 真正调用冻结 RM；精确匹配 verifier 只记录训练是否提升真实正确率，绝不混入 policy loss。关键约束是：**RM 只负责打整段分数，逐 token 的 reward 分布由 PPO 的"序列奖励广播"单独决定**。
 
 ### PPO + KL：以 mask 为护栏，KL 符号不可反
 
@@ -85,7 +85,7 @@ old_logp 冻结，不重算                （深坑⑥）
 advantage = target - old_value，恒 detached（深坑⑩）
 entropy bonus 防collapse（=0.001）
 ```
-定长 + 无 EOS/padding 的 `RESPONSE_LEN` 约定（`check("response 定长")`）、`chosen/rejected 长度一致` 断言把深坑②（padding 计数）与 ④（长度未归一化）并案按掉。三个 PPO epoch 内自取样 rollout，旧对数概率**冻结**，`[检查]` 断言 `old_logp.requires_grad == False`；KL 检查不依赖 sampled log-ratio 的正负，而是直接验证 `token_reward - raw_reward == -β·(old_logp-ref_logp)`；`[检查]` 断言 advantage detached。
+定长 + 无 EOS/padding 的 `RESPONSE_LEN` 约定（`check("response 定长")`）、`chosen/rejected 长度一致` 断言把深坑②（padding 计数）与 ④（长度未归一化）并案按掉。三个 PPO epoch 内自取样 rollout，旧对数概率**冻结**，`[检查]` 断言 `old_logp.requires_grad == False`；KL 检查不依赖 sampled log-ratio 的正负，而是直接验证单独保留的 `kl_penalty == -β·(old_logp-ref_logp)`；advantage 恒 detached。Policy trunk、LM head 与 value head 共享一个 optimizer，避免 value head 被两套 Adam 重复 step。
 
 ### DPO：删掉 RM 与 rollout，直接用偏好
 
@@ -97,9 +97,9 @@ DPO 是最小化的偏好优化：不需要奖励模型，也不需要在训练�
 
 ```
 stage      P(target) mean     greedy_acc
-SFT        0.7500             1.000
-RL/PPO+KL     0.9995             1.000
-DPO        0.9997             1.000
+SFT        0.7378             0.500
+RL/PPO+KL  0.8741             1.000
+DPO        0.9993             1.000
 ```
 
 这列（SFT → RL/PPO+KL → DPO）就是整条链路的进度地图：`P(target)` 一路上涨，`greedy_acc` 保持高稳，最后用 v1.0 验证器兜底。
@@ -117,7 +117,7 @@ DPO        0.9997             1.000
 
 3. **Stage 1/5 SFT（v0.0）**——交叉熵带 SFT 答案，`P(target)` 落入 0.75。冻结 `reference_policy`。
 4. **Stage 2/5 Reward Model（BT，v0.1）**——训练、冻结 RM；`rm_acc` 打印偏好准确率。
-5. **Stage 3/5 PPO + KL（v0.4）**——`batch_size=128`、`ppo_epochs=3`、KL β=0.1、clip 0.2；两条 `check`（response 定长、chosen/rejected 长度一致）+ 五条深坑断言（advantage detach、old_logp 冻结、奖励不发广播、KL 符号、response mask）。
+5. **Stage 3/5 PPO + KL（v0.4）**——`batch_size=128`、`ppo_epochs=3`、KL β=0.1、clip 0.2；rollout 同时记录 RM score 与 verifier 0/1，但只有 RM score 进入 reward；单 optimizer 更新共享 policy/value；两条长度检查 + 五条深坑断言锁住梯度与 mask 边界。
 6. **Stage 4/5 DPO（v0.8）**——用同一冻结 reference 做 π_ref，DPO_loss 滚动；`[DPO-standalone]` 打出 SFT→DPO 的 P + greedy。
 7. **per-stage 总结表**——打印 `stage / P(target) mean / greedy_acc` 三横三列。
 8. **Stage 5/5 Verifier / Best-of-N（v1.0）**——确定性验证器 + 真实 best-of-N（每 prompt 采 N 个候选、任一命中即成功）；在 SFT 弱策略上演示 N=1 < N=4 < N=16 单调上升，并打印训练后（已饱和）策略作对照。
