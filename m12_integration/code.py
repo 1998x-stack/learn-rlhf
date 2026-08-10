@@ -238,7 +238,6 @@ def best_of_n_accuracy(model: nn.Module, n: int, trials: int = 200) -> float:
                 ctx = rollout(model, prompt_ids)
                 resp = ctx[:, PROMPT_LEN:]
                 ok = (resp == target_ids).all(dim=-1)      # [P] 精确验证器 0/1
-                j_correct = ok.sum().item()
             if j == 0:
                 best = ok.clone()                                 # 逐 prompt 的"已验证正确"
             else:
@@ -538,11 +537,11 @@ print("\n============== Stage 5/5: Verifier / Best-of-N (v1.0) ==============")
 sft_weak_bon1 = best_of_n_accuracy(reference_policy, n=1)
 sft_weak_bon4 = best_of_n_accuracy(reference_policy, n=4)
 sft_weak_bon16 = best_of_n_accuracy(reference_policy, n=16)
-final_bon1 = best_of_n_accuracy(policy, n=1)
-final_bon4 = best_of_n_accuracy(policy, n=4)
+final_bon1 = best_of_n_accuracy(dpo_policy, n=1)
+final_bon4 = best_of_n_accuracy(dpo_policy, n=4)
 print(f"[验证器] Best-of-N（SFT 弱策略，真实采样 N 个候选验证器筛选）: "
       f"N=1 -> {sft_weak_bon1:.3f}, N=4 -> {sft_weak_bon4:.3f}, N=16 -> {sft_weak_bon16:.3f}")
-print(f"[验证器] Best-of-N（训练后策略，对照/已饱和）: N=1 -> {final_bon1:.3f}, "
+print(f"[验证器] Best-of-N（DPO 后策略，对照/已饱和）: N=1 -> {final_bon1:.3f}, "
       f"N=4 -> {final_bon4:.3f} | greedy_acc={dpo_greedy:.3f}")
 
 # ============================================================
@@ -563,7 +562,7 @@ assert sft_weak_bon4 >= sft_weak_bon1 and sft_weak_bon16 >= sft_weak_bon4, (
     f"bon4={sft_weak_bon4:.3f}, bon16={sft_weak_bon16:.3f}"
 )
 assert final_bon1 >= 0.9 and final_bon4 >= 0.9, (
-    f"Best-of-N 训练后策略应维持高可验证正确率: bon1={final_bon1:.3f}, bon4={final_bon4:.3f}"
+    f"Best-of-N DPO 后策略应维持高可验证正确率: bon1={final_bon1:.3f}, bon4={final_bon4:.3f}"
 )
 assert first_total_loss is not None and last_total_loss < first_total_loss, (
     f"(policy+value) total_loss 应下降: {first_total_loss} -> {last_total_loss}"
@@ -588,9 +587,12 @@ check("old_logp 冻结且不重新计算", not old_logp.requires_grad,
 # ⑤ RM 奖励只广播到最后 response token；前区 token 的 raw reward 贡献为 0
 check("RM 奖励只落在最后 response token", bool((raw_broadcast[:, :-1] == 0).all().item()),
       "RM 奖励被错误地广播到了所有 token")
-# ⑦ KL 符号正确：非末 token reward 必须 <= ~0（只 -β·KL）
-check("KL 符号正确（-β·KL 惩罚，非加）", bool((token_reward[:, :-1] <= 1e-6).all().item()),
-      "KL 符号写反：非末位 response token 未得到 -β·KL 惩罚")
+# ⑦ KL 符号正确：sampled log-ratio 本身可正可负，不能用 reward 正负判断；
+# 直接检查构造恒等式 token_reward - raw_reward == -β * sampled_log_ratio。
+kl_contribution = token_reward - raw_broadcast
+check("KL 符号正确（reward 的 KL 项严格等于 -β·log-ratio）",
+      bool(torch.allclose(kl_contribution, -kl_beta * tok_kl, atol=1e-7, rtol=1e-6)),
+      "KL 项不等于 -β·(old_logp-ref_logp)，可能符号写反或混入其他奖励")
 # ①/③ prompt token 不进入 PPO loss：按位置推导的 mask 在 prompt 区全 0、
 # response 区全覆盖，且 loss 消费的 logp 宽度恰为 RESPONSE_LEN（不含 prompt）。
 check("Prompt token 不进入 PPO loss（位置mask prompt区=0 且 response 全覆盖 + logp 宽度=RESPONSE_LEN）",
@@ -616,6 +618,6 @@ print(f"正确回答平均概率: SFT={sft_target_mean:.4f} -> RL={rl_target_mea
       f"-> DPO={dpo_target_mean:.4f}")
 print(f"greedy_acc={dpo_greedy:.3f} | Best-of-N(SFT弱): N=1={sft_weak_bon1:.3f}, "
       f"N=4={sft_weak_bon4:.3f}, N=16={sft_weak_bon16:.3f} | "
-      f"训练后: N=1={final_bon1:.3f}, N=4={final_bon4:.3f}")
+      f"DPO后: N=1={final_bon1:.3f}, N=4={final_bon4:.3f}")
 print("[PASS] m12 integration: SFT→RM(BT)→PPO/KL→DPO→Best-of-N 端到端收束，"
       "深坑清单（response-mask / 奖励广播 / KL 符号 / old-logp 冻结 / advantage detach）全部通过")

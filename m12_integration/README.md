@@ -85,7 +85,7 @@ old_logp 冻结，不重算                （深坑⑥）
 advantage = target - old_value，恒 detached（深坑⑩）
 entropy bonus 防collapse（=0.001）
 ```
-定长 + 无 EOS/padding 的 `RESPONSE_LEN` 约定（`check("response 定长")`）、`chosen/rejected 长度一致` 断言把深坑②（padding 计数）与 ④（长度未归一化）并案按掉。三个 PPO epoch 内自取样 rollout，旧对数概率**冻结**，`[检查]` 断言 `old_logp.requires_grad == False`；`[检查]` 断言非末 token 的 token_reward ≤ ~0（即只 -β·KL、无奖励泄漏）；`[检查]` 断言 advantage detached。
+定长 + 无 EOS/padding 的 `RESPONSE_LEN` 约定（`check("response 定长")`）、`chosen/rejected 长度一致` 断言把深坑②（padding 计数）与 ④（长度未归一化）并案按掉。三个 PPO epoch 内自取样 rollout，旧对数概率**冻结**，`[检查]` 断言 `old_logp.requires_grad == False`；KL 检查不依赖 sampled log-ratio 的正负，而是直接验证 `token_reward - raw_reward == -β·(old_logp-ref_logp)`；`[检查]` 断言 advantage detached。
 
 ### DPO：删掉 RM 与 rollout，直接用偏好
 
@@ -106,7 +106,7 @@ DPO        0.9997             1.000
 
 ### Best-of-N：不训练也还能再榨
 
-最后一段（v1.0）做**真实的推理时采样**：对同一 prompt 采 N 个候选，用精确验证器挑出"已验证正确"的那个；N 越大"至少采到一个正确解"的成功率越高（`1-(1-p)^N`）。为了让"随 N 单调上升"诚实可见，把演示放在有真实散布的 **SFT 弱策略**上（打印 `N=1 < N=4 < N=16`），再把已收敛（近乎满分、已饱和）的最终策略打出来做对照。这就是 m11（可验证奖励）的核心手段，也是沿 v0.0→v1.0 的收尾。
+最后一段（v1.0）做**真实的推理时采样**：对同一 prompt 采 N 个候选，用精确验证器挑出"已验证正确"的那个；N 越大"至少采到一个正确解"的成功率越高（`1-(1-p)^N`）。为了让"随 N 单调上升"诚实可见，把演示放在有真实散布的 **SFT 弱策略**上（打印 `N=1 < N=4 < N=16`），再把已收敛（近乎满分、已饱和）的 DPO 策略打出来做对照。这就是 m11（可验证奖励）的核心手段，也是沿 v0.0→v1.0 的收尾。
 
 ## Code Walkthrough
 
@@ -141,7 +141,7 @@ python -m m12_integration.code       # 从仓库根目录运行亦可
 | `advantage 已 detach（无梯度泄漏）` | ⑩ |
 | `old_logp 冻结且不重新计算` | ⑥ |
 | `RM 奖励只落在最后 response token` | ⑧ 奖励广播 |
-| `KL 符号正确（-β·KL 惩罚，非加）` | ⑦ |
+| `KL 符号正确（reward 的 KL 项严格等于 -β·log-ratio）` | ⑦ |
 | `Prompt token 不进入 PPO loss（位置mask prompt区=0 且 response 全覆盖 + logp 宽度=RESPONSE_LEN）` | ① |
 
 > 坑③（EOS 后未 Mask）、⑤（reference 用了错误 tokenizer）、⑨（value bootstrap 越过 EOS）由**定长 + 无 EOS/padding** 的结构约定在代码层面一并兜住，故未单列活跃断言；把 `RESPONSE_LEN` / reference 来源改坏时，前述长度与 logp 对齐断言会先失败。

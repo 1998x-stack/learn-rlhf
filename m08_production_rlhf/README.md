@@ -8,7 +8,7 @@
 
 **如何进行 FLOP 数十亿参数级的大规模 RLHF，仍然让训练"稳、可续、可跨越机器"？**
 
-m01–m07 已经把 RLHF 的**算法**打通：SFT → Reward Model → REINFORCE/PPO → token-level GAE → 多目标奖励。但坑在于：毫尖端实验室《`versions.md` §9 v0.6》“生产级 RLHF”列出的是一整套**系统架构**，而不是某一个算法：
+m01–m07 已经把 RLHF 的**算法**打通：SFT → Reward Model → REINFORCE/PPO → token-level GAE → 多目标奖励。但问题在于：`versions.md` §9 v0.7“生产级 RLHF”列出的是一整套**系统架构**，而不是某一个算法：
 
 ```text
 Prompt Dataset
@@ -86,7 +86,7 @@ Periodic Evaluation
 
 **checkpoint 为什么能"元级等价"**：`state_dict` 含 Adam 的动量和方差一阶/二阶矩。`torch.save` 是整棵 state 的 pickle，`load_state_dict` 复原后**权重与优化器状态都完全等价**，因此轻微一步 step 都能恢复，行为不漂移。断点续跑就是 `save(step) → load(step+1)`。
 
-## Code Walkthrough（版本锚点 `# v0.7`，同 versions.md §9 v0.6）
+## Code Walkthrough（版本锚点 `# v0.7`，同 versions.md §9 v0.7）
 
 **Step 1｜离散核心（复刻 m04）** — `PolicyModel / RewardModel / ValueModel`。SFT 用带噪标签（prompt 0/2 指向正确候选、1/3 指向错误），得到"半对半错"的初学策略，作为 Reference（KL 锚点）。
 

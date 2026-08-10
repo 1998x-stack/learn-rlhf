@@ -3,7 +3,7 @@
 Run:  python m07_multi_objective/code.py
 
 在 m04 (v0.3) 的离散 PPO 核心之上，把"单一奖励"升级为"多维奖励"（versions.md
-§9 v0.6/v0.7）：
+§9 v0.6）：
 
     R_total = w_h·R_helpful + w_s·R_safety + w_v·R_verbosity
 
@@ -11,10 +11,10 @@ Run:  python m07_multi_objective/code.py
 
 1. Reward Hacking（§11.1/11.2）：构造一个极易被过度优化的 verbosity/style 代理
    奖励，用纯加权目标去优化它，出现"代理奖励一路上升、真实质量持平甚至下降"。
-2. Reward Overoptimization 与 Hard Constraint（§9 v0.7）：软加权（weighted sum）
+2. Reward Overoptimization 与 Hard Constraint（§9 v0.6）：软加权（weighted sum）
    下的安全目标会被 verbosity 奖励"hack"掉；改成硬约束（safety 低于阈值就
    reject/penalize 该样本），策略不再从不安全回答中获利。
-3. Bias 评估（§9 v0.7）：verbosity bias 与 position bias 的量化诊断。
+3. Bias 评估（§9 v0.6）：verbosity bias 与 position bias 的量化诊断。
 """
 
 # --- v0.6: 多目标 reward 聚合 ---
@@ -293,7 +293,7 @@ def run_ppo(reward_kind: str, reject_unsafe: bool) -> PolicyModel:
             else:  # 'total'：加权聚合
                 r_total = aggregate(help_r, safe_r, verb_r)
 
-            # ---- hard safety gate（v0.7）：reject/惩罚安全违规样本 ----
+            # ---- hard safety gate（v0.6）：reject/惩罚安全违规样本 ----
             if reject_unsafe:
                 is_unsafe = safe_r < SAFE_THRESHOLD
                 r_total = torch.where(

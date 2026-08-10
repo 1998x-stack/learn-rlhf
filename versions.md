@@ -1077,7 +1077,50 @@ A_t^{GAE}
 
 ---
 
-## v0.6：生产级 RLHF
+## v0.6：多维偏好与安全约束
+
+单一 Reward Model 很容易把不同目标混在一个分数中。
+
+```text
+Helpfulness Reward
+Correctness Reward
+Safety Reward
+Style Reward
+Format Reward
+       ↓
+Reward Aggregator
+```
+
+可采用：
+
+\[
+R_{\text{total}}
+=
+\sum_i w_iR_i
+\]
+
+但安全目标有时不适合简单线性加权，而应作为硬约束：
+
+```text
+if safety_violation:
+    reject_sample
+else:
+    optimize_helpfulness
+```
+
+新增评估：
+
+- 不同语言；
+- 长短回答；
+- 边界安全样本；
+- 奖励模型群体偏差；
+- verbosity bias；
+- position bias；
+- reward disagreement。
+
+---
+
+## v0.7：生产级 RLHF
 
 ```text
 Prompt Dataset
@@ -1121,51 +1164,6 @@ w_fR_{\text{format}}
 -
 \beta KL
 \]
-
----
-
-## v0.7：多维偏好与安全约束
-
-单一 Reward Model 很容易把不同目标混在一个分数中。
-
-升级为：
-
-```text
-Helpfulness Reward
-Correctness Reward
-Safety Reward
-Style Reward
-Format Reward
-       ↓
-Reward Aggregator
-```
-
-可采用：
-
-\[
-R_{\text{total}}
-=
-\sum_i w_iR_i
-\]
-
-但安全目标有时不适合简单线性加权，而应作为硬约束：
-
-```text
-if safety_violation:
-    reject_sample
-else:
-    optimize_helpfulness
-```
-
-新增评估：
-
-- 不同语言；
-- 长短回答；
-- 边界安全样本；
-- 奖励模型群体偏差；
-- verbosity bias；
-- position bias；
-- reward disagreement。
 
 ---
 
@@ -1316,8 +1314,8 @@ R_t=\text{step verifier}(s_t,a_t)
 | v0.3 | PPO MVP | RM + Value + PPO | 仍是回答级简化 |
 | v0.4 | Token-level PPO | token log-prob | Mask 和长度处理复杂 |
 | v0.5 | GAE PPO | token reward + GAE | 超参数敏感 |
-| v0.6 | 分布式 RLHF | 多奖励、在线 rollout | 成本和系统复杂度高 |
-| v0.7 | 多目标 RLHF | 帮助性、安全性等 | 奖励冲突 |
+| v0.6 | 多目标 RLHF | 帮助性、安全性等 | 奖励冲突 |
+| v0.7 | 分布式 RLHF | 多奖励、在线 rollout | 成本和系统复杂度高 |
 | v0.8 | DPO 家族 | 离线偏好对 | 在线探索较弱 |
 | v0.9 | RLAIF | AI Judge 偏好 | Judge 偏差 |
 | v1.0 | 可验证 RL | 执行器/验证器 | 只适用于可验证领域 |
@@ -1473,25 +1471,27 @@ r(y_w)-r(y_l)
 # 12. 建议的学习实现顺序
 
 ```text
-v0.1 离散 Policy + Reward Model
+v0.0 SFT Baseline
+        ↓
+v0.1 离散回答级 Reward Model
         ↓
 v0.2 REINFORCE + KL
         ↓
-v0.3 PPO + Value
+v0.3 PPO + Value Model
         ↓
-v0.4 字符级 Tiny GPT
+v0.4 Token-level Tiny LM RLHF
         ↓
-v0.5 Token-level PPO + Mask
+v0.5 GAE 与完整 PPO
         ↓
-v0.6 GAE + Adaptive KL
+v0.6 多维偏好与安全约束
         ↓
-v0.7 Hugging Face 小模型
+v0.7 生产级 / 分布式 RLHF
         ↓
-v0.8 vLLM Rollout + 分布式训练
+v0.8 DPO 类离线偏好优化
         ↓
-v0.9 DPO 与 PPO 对照实验
+v0.9 RLAIF 与规则反馈
         ↓
-v1.0 Verifiable Reward
+v1.0 可验证奖励与推理强化学习
 ```
 
 核心认识是：

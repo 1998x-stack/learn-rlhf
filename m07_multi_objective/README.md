@@ -6,7 +6,7 @@
 
 ## The Problem
 
-m04/m05/m06 里都只有**一个标量奖励**（Reward Model 的分数）。但真实 RLHF 的"人类满意度"是**多维的**——一个回答要同时满足有用、正确、安全、风格合适、格式规范，还常常彼此冲突（`versions.md` §9 v0.6/v0.7）：
+m04/m05/m06 里都只有**一个标量奖励**（Reward Model 的分数）。但真实 RLHF 的"人类满意度"是**多维的**——一个回答要同时满足有用、正确、安全、风格合适、格式规范，还常常彼此冲突（`versions.md` §9 v0.6）：
 
 ```text
 Helpfulness Reward
@@ -25,7 +25,7 @@ $$ R_{\text{total}} = \sum_i w_i R_i = w_h R_{\text{helpful}} + w_s R_{\text{saf
 但这里藏着两个大坑：
 
 1. **Reward Hacking / Overoptimization（`versions.md` §11.1/11.2）**：模型优化的是 Reward Model 的分数，不是真实人类满意度。如果某个分量（比如"风格/长度"）很容易被刷高，策略就会拼命去刷它——**代理奖励一路涨，真实质量却持平甚至下降**。
-2. **安全目标不适合单纯线性加权（§9 v0.7）**：安全往往应该是**硬约束**，而不是可以被别的目标"买通"的软权重:
+2. **安全目标不适合单纯线性加权（§9 v0.6）**：安全往往应该是**硬约束**，而不是可以被别的目标"买通"的软权重:
 
 ```text
 if safety_violation:
@@ -61,7 +61,7 @@ R_total = 1.3·R_helpful + 1.0·R_safety + 3.0·R_verbosity
    - **naive**：奖励就是 `R_total`（加权和，硬要让安全部分也参与加权）；
    - **hard**：同样的 `R_total`，但**只要 `safety < 阈值` 就把该样本的奖励替换成一个大负数**（= 把违规样本从损失里剔除、并推着策略远离它）。
    比较两者的 `unsafe_rate`。
-3. **Bias 评估（§9 v0.7 列表）**：算 `corr(长度, verbosity代理)`、`corr(长度, HelpfulnessRM)`，以及 `corr(位置, RM)`——量化 verbosity bias 与 position bias。
+3. **Bias 评估（§9 v0.6 列表）**：算 `corr(长度, verbosity代理)`、`corr(长度, HelpfulnessRM)`，以及 `corr(位置, RM)`——量化 verbosity bias 与 position bias。
 
 ## How It Works
 
@@ -83,11 +83,11 @@ is_unsafe = safe_r < SAFE_THRESHOLD
 r_total = torch.where(is_unsafe, 大负数惩罚, r_total)
 ```
 
-被替换成 `SAFE_PENALTY=-2.0` 的样本，其 advantage 变成长深负值，PPO 会把这块概率**主动让出来**，让给同 prompt 里安全的最优答案（a0）。这就是 `versions.md` §v0.7 的 `reject_sample` 路线：**不是修改权重，而是让策略永远无法从不安全回答中获利**。
+被替换成 `SAFE_PENALTY=-2.0` 的样本，其 advantage 变成长深负值，PPO 会把这块概率**主动让出来**，让给同 prompt 里安全的最优答案（a0）。这就是 `versions.md` §v0.6 的 `reject_sample` 路线：**不是修改权重，而是让策略永远无法从不安全回答中获利**。
 
 - **Bias 诊断的意义**：`corr(长度, verbosity代理)≈0.87`（代理本质上就是"长度"），而 `corr(长度, HelpfulnessRM)≈-0.50`——说明一个合格的 Helpfulness RM 不会偏爱长文本，偏长文本的奖励其实是 bias。`corr(位置, RM)≈-0.85` 也警告：**奖励与候选所在列表位置强相关**时，就是 location bias，需要按内容做残差化才能判定真实偏好。
 
-## Code Walkthrough（版本锚点 `# v0.6`，同 `versions.md` §9 v0.6/v0.7）
+## Code Walkthrough（版本锚点 `# v0.6`，同 `versions.md` §9 v0.6）
 
 **Step 1｜数据** — 复用 m04 的 4 个 prompt × 3 候选形状，但每个候选显式给出 `HELPFUL / SAFE / LENGTH` 三张表。`responses` 只是展示文本；训练用的是这三张表的属性，避免依赖真实的字符长度统计。
 
@@ -129,11 +129,11 @@ python m07_multi_objective/code.py
 - **Reward Overoptimization 的完整曲线（§11.2）**：本模块只演示了"代理涨、质量跌"的终点。完整故事是——早期 `reward ↑ / human eval ↑`，继续训练才`reward ↑ / human eval ↓`；真实生产要在过程中监控 reward、KL、response length、entropy、人工胜率、独立 Judge 胜率、通用能力回归。
 - **拒绝采样与 `best-of-N`**：这里的"hard reject"和 v1.0 的 rejection sampling 一脉相承——只让"通过校验"的样本进入训练。真实部署常配合 `best-of-N`：采样 N 个回答，选 safety 校验通过且 reward 最高的一个喂给用户。
 - **多目标加权里的 reward 冲突**：多目标会经常出现 reward 冲突（帮助性和安全性打架）。除了加权和、硬约束，还有 `min`（取最小分量）、`product`、`lexicographic`（先保安全再加权）等聚合策略，都是后续可选方向。
-- **bias 量化后的残差化**：看到 reward 与长度/位置强相关时，不能直接说"模型喜欢长/位置 0"——要先把真实质量当作协变量做残差（partial correlation）。`versions.md` §v0.7 的 "verbosity bias / position bias" 正是这么要求。
+- **bias 量化后的残差化**：看到 reward 与长度/位置强相关时，不能直接说"模型喜欢长/位置 0"——要先把真实质量当作协变量做残差（partial correlation）。`versions.md` §v0.6 的 "verbosity bias / position bias" 正是这么要求。
 - **这是 m08 的桥**：m07 的单机多维奖励 + hard gate，走进 m08 的分布式/生产 RLHF（rollout 解耦、adaptive KL、在线监控）就是工程放大版。
 
 ## 模块定位
 
-这是 `learn-rlhf` 里把"RLHF 奖励从一个标量变成一组目标"的拐点（`v0.6`）：在 m04 的离散 PPO 完整闭环上，把单一 Reward 换成 `w_h R_helpful + w_s R_safety + w_v R_verbosity`，并亲自演示两件生产必学的课——**Reward Hacking（代理涨、质量降，§11）** 与 **安全硬约束胜过软权重（§9 v0.7）**，最后量化评价 verbosity/position bias。`R_total` 每条 rollout 都断言**有界**；代理过度优化与硬约束胜出均用可测断言锁死；`[PASS]` 字样与断言一致性。
+这是 `learn-rlhf` 里把"RLHF 奖励从一个标量变成一组目标"的拐点（`v0.6`）：在 m04 的离散 PPO 完整闭环上，把单一 Reward 换成 `w_h R_helpful + w_s R_safety + w_v R_verbosity`，并亲自演示两件生产必学的课——**Reward Hacking（代理涨、质量降，§11）** 与 **安全硬约束胜过软权重（§9 v0.6）**，最后量化评价 verbosity/position bias。`R_total` 每条 rollout 都断言**有界**；代理过度优化与硬约束胜出均用可测断言锁死；`[PASS]` 字样与断言一致性。
 
-版本：**v0.6 / v0.7 概念预览** · 运行：`python m07_multi_objective/code.py`（CPU 秒级）
+版本：**v0.6** · 运行：`python m07_multi_objective/code.py`（CPU 秒级）

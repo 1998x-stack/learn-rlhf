@@ -3,7 +3,7 @@
 Run:  python m08_production_rlhf/code.py
 
 在 m04 (v0.3) 的离散回答级 PPO 核心之上，模拟"生产级/分布式 RLHF"的关键工程
-骨架（versions.md §9 v0.6 的生产架构，教学上收敛为单 GPU 仿真）：
+骨架（versions.md §9 v0.7 的生产架构，教学上收敛为单 GPU 仿真）：
 
     Prompt Dataset
          ↓
