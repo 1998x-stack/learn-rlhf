@@ -1,6 +1,7 @@
+[返回根目录](../README.md)
+
 # m04: PPO + Value Model（离散 PPO MVP）(v0.3)
 
-[返回根目录](../README.md)
 
 ---
 

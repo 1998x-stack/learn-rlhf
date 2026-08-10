@@ -1,6 +1,7 @@
+[返回根目录](../README.md)
+
 # m11: 可验证奖励与 GRPO —— Reinforcement Learning from Verifiable Rewards（v1.0）
 
-[返回根目录](../README.md)
 
 ---
 

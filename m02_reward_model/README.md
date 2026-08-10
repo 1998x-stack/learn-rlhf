@@ -1,6 +1,7 @@
+[返回根目录](../README.md)
+
 # m02: Bradley–Terry Reward Model（v0.1）
 
-[返回根目录](../README.md)
 
 ---
 

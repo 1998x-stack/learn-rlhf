@@ -1,6 +1,7 @@
+[返回根目录](../README.md)
+
 # m06: GAE + 完整 Token-level PPO（v0.5）
 
-[返回根目录](../README.md)
 
 ---
 

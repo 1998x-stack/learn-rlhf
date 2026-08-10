@@ -1,6 +1,7 @@
+[返回根目录](../README.md)
+
 # m05: 字符级 Tiny LM + Token-level PPO（v0.4）
 
-[返回根目录](../README.md)
 
 ---
 

@@ -1,6 +1,7 @@
+[返回根目录](../README.md)
+
 # m12: 收束 —— 端到端 RLHF 全链路 + 深坑清单（SFT → RM → PPO/KL → DPO → Best-of-N）
 
-[返回根目录](../README.md)
 
 ---
 

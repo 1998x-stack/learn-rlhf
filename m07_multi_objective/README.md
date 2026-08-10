@@ -1,6 +1,7 @@
+[返回根目录](../README.md)
+
 # m07: 多目标 Reward 聚合 + Reward Hacking（v0.6）
 
-[返回根目录](../README.md)
 
 ---
 
