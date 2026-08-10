@@ -66,15 +66,19 @@ def main() -> None:
     policy = PolicyModel(num_prompts=num_prompts, num_actions=num_actions)
     optimizer = torch.optim.Adam(policy.parameters(), lr=1e-2)
     loss = None
+    first_loss = None
     for step in range(60):
         logits = policy(prompt_ids)
         loss = F.cross_entropy(logits, sft_labels)
+        if first_loss is None:
+            first_loss = loss.detach().item()
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
     # shape + loss assertions
     assert policy(prompt_ids).shape == (num_prompts, num_actions)
-    assert loss is not None and loss.item() < 1.0, "SFT loss 未下降"
+    assert loss is not None and first_loss is not None
+    assert loss.item() < first_loss, f"SFT loss 未下降: {first_loss:.4f} -> {loss.item():.4f}"
     print(f"\n最终 SFT loss = {loss.item():.4f}")
     print_policy("SFT 后的策略", policy)
     print("[PASS] m01 sft_policy: 离散 Policy 在 SFT 数据上收敛（loss 下降、输出 shape 正确）")

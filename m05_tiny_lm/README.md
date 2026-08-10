@@ -13,7 +13,7 @@ m04 的 PPO 已经能跑通完整的 RLHF 闭环，但它是**离散回答级**�
 1. **mask**：输入是 `[prompt token][response token]`，PPO / KL / value 只能作用在 response token 上，绝不能把 prompt token 也优化（`versions.md` §11.6 第一条坑）；
 2. **token-level log-prob**：`log π_θ(y|x) = Σ_t m_t·logπ(y_t|…)`，是**每个 response token 的 log-prob 之和**，而不是一个整体的 action log-prob；
 3. **token-level KL**：每个 response token 都要跟 frozen reference 比 `logπ_θ - logπ_ref`；
-4. **序列奖励分配**：Reward Model 给的是"整个回答"一个分数，怎么分到每个 token 上？标准做法是**只广播给最后一个 response token**，其余 token 只承担 KL 惩罚；
+4. **序列奖励分配**：序列级 reward function 给的是"整个回答"一个分数，怎么分到每个 token 上？这里把它**只广播给最后一个 response token**，其余 token 只承担 KL 惩罚；
 5. **reward 广播 + value head**：PPO 需要一个**每个 token 都预测标量**的 Value/Critic。
 
 一句话：m04 的"回答 = 一个 action"在 m05 变成了"回答 = 一串 token，每个 token 是一个 action（step）"，PPO 的坐标轴从"回答序号"变成了"自回归生成时的每一个 token"。
@@ -29,7 +29,7 @@ TinyGPT (因果自注意力, 只能看到自己及之前的 token)
      ↓
 Auto-regressive Rollout：逐 token 生成 response（固定长度）
      ↓
-规则 Reward Model：整个 response 和正确 target 比对，给 0/1
+规则奖励函数：整个 response 和正确 target 比对，给 0/1
      ↓
 Token-level PPO（response mask / token KL / 序列奖励广播 / n-step returns）
 ```
@@ -61,10 +61,10 @@ $$ \text{KL}_t=\log\pi_\theta(y_t\mid s_t)-\log\pi_{\text{ref}}(y_t\mid s_t) $$
 
 ```text
 token 1 (resp 首位):   reward = -β·KL₁
-token 2 (resp 末位):   reward = -β·KL₂ + RM Reward   ← 序列奖励广播到最后
+token 2 (resp 末位):   reward = -β·KL₂ + Rule Reward ← 序列奖励广播到最后
 ```
 
-RM 打的是"整个回答"的分数，`+1`/`0`，我们把它**加到最后一个 response token** 上；其它 response token 只拿 KL 惩罚（`-β·KL_t`），防止策略偏离 SFT 的合理语言分布。
+这里的精确匹配规则为"整个回答"打 `+1`/`0`，我们把它**加到最后一个 response token** 上；其它 response token 只拿 KL 惩罚（`-β·KL_t`），防止策略偏离 SFT 的合理语言分布。它扮演序列级 reward function，不是一个训练出来的 Reward Model；真实 RM 的偏好学习见 m02/m04。
 
 **Token-level PPO**。得到每个 response token 的 `returns`（这里用 `cheap n-step`：`returns_t = r_t + γ·returns_{t+1}`，把末 token 的序列奖励折现回溯给前面的 token，让前面的 token 也分享到"答对"信号；正式 GAE 见 m06）。`Advantage = returns - value`，做 token 级标准化，然后对 response 的每个 token 算 PPO ratio 和 clip。
 
@@ -85,9 +85,9 @@ RM 打的是"整个回答"的分数，`+1`/`0`，我们把它**加到最后一�
 - 计算 `old_logp / ref_logp`（response 位置）→ `tok_kl` → 序列奖励分配（末 token 加 `raw_reward`，其余只 `-βKL`）。
 - `returns = n-step`；`advantage = returns - old_values`；token 级标准化。
 - `ratio = exp(curr_logp - old_logp)`，`clip`，PPO loss；Value 用 `MSE(values, returns)`。
-- policy loss + value loss 共享主体，合并一次 backward 后分别 step。
+- policy loss + value loss 共享主体，合并一次 backward 后由同一个 optimizer step。
 
-**Step 6｜[PASS]** — 断言：正确 target 平均概率**显著上升**（0.75→1.00）、greedy 解码准确率≈1.0、total loss 下降；打印 `[PASS]`，退出码 0。
+**Step 6｜[PASS]** — 断言：正确 target 平均概率从约 0.75 **显著上升**（固定种子下超过 0.95）、greedy 解码准确率为 1.0、total loss 下降；打印 `[PASS]`，退出码 0。
 
 运行：
 
@@ -98,10 +98,10 @@ python m05_tiny_lm/code.py
 ## Key Design Decisions
 
 - **因果偏移索要是最容易错的地方**。`logits[b,t]` 预测位置 t+1 的 token，所以 response 第 k 个 token（位于 p=r(A)+k）由 `logits[b,p-1]` 预测。SFT 交叉熵、`response_log_probs`、old/current log-prob、KL **全部**用这个约定。写错一个就会像 `versions.md` §11.6 说的"不报错但训练方向完全错"。
-- **序列奖励只广播给最后一个 token**：忠实还原 v0.4 的机制；让前面的 token"承压"去与 ref 对齐（KL），最后的答案 token 承接 RM 奖励。配合 `n-step return` 让前面的 token 也能折现分享奖励。
+- **序列奖励只广播给最后一个 token**：忠实还原 v0.4 的机制；让前面的 token"承压"去与 ref 对齐（KL），最后的答案 token 承接精确匹配奖励。配合 `n-step return` 让前面的 token 也能折现分享奖励。
 - **`target_demo` 与合法 target 不冲撞**：错误示范用 `"55"`，不和任何正确目标码重叠，避免"同一个 token 既是对的又是错的"这种自相矛盾的监督，保证 SFT 能被清晰记忆、RLHF 能干净纠偏。
 - **带噪 SFT 制造"半对半错"的可修正起点**：对两个 prompt 各给正确/错误一条示范 → 模型对它们不确定而非"确定地错"，这样 reward=1 的样本自然出现，PPO 才能把概率抬起来。这更贴近"SFT 数据有噪声"的真实情况。
-- **policy 与 value 共享主体**：合并后一次 backward（而不是两次），因为两 loss 来自同一次前向；分别用各自 optimizer step，避免图被二次 backward 释放。
+- **policy 与 value 共享主体，也共享一个 optimizer**：两项 loss 来自同一次前向，合并后只 backward/step 一次。`value_head` 本来就是 `policy.parameters()` 的子集；若再交给第二个 Adam，它会在一轮里被两套状态重复更新。
 - **sys.path 剔除本目录**：本文件叫 `code.py` 会遮蔽标准库 `code`（同 m01–m04）。
 
 ## Going Deeper

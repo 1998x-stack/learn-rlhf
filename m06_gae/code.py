@@ -233,8 +233,10 @@ def compute_gae_closed(
     discounted = torch.zeros_like(values)
     gaelam = gamma * lam
     for t in range(T):
-        l = torch.arange(0, T - t, device=values.device)
-        discounted[:, t] = (deltas[:, t + l] * (gaelam ** l).unsqueeze(0)).sum(dim=1)
+        offsets = torch.arange(0, T - t, device=values.device)
+        discounted[:, t] = (
+            deltas[:, t + offsets] * (gaelam ** offsets).unsqueeze(0)
+        ).sum(dim=1)
     return deltas, discounted
 
 
@@ -319,8 +321,9 @@ for p in reference_policy.parameters():
 # 6. PPO / GAE 超参数
 # ============================================================
 
-policy_optimizer = torch.optim.Adam(policy.parameters(), lr=5e-3)
-value_optimizer = torch.optim.Adam(policy.value_head.parameters(), lr=5e-3)
+# trunk、LM head 与 value head 共享一个计算图，也只交给一套 Adam 状态管理；
+# 否则 value_head 会同时属于 policy/value 两个 optimizer，一轮被重复 step。
+optimizer = torch.optim.Adam(policy.parameters(), lr=5e-3)
 
 batch_size = 128
 MINIBATCH = 32              # 每个 mini-batch 的样本数
@@ -414,14 +417,13 @@ def main() -> None:
         # v0.5 深化：不再一次性更新整个 batch，而是把 batch 打散成 num_minibatches
         # 个 mini-batch（每 epoch 用 randperm 重新 shuffle），逐个 mini-batch 前向、
         # 分摊 `total/num_minibatches` 的 loss 并 backward 累积梯度；一个 epoch 的
-        # 所有 mini-batch 累积完后，先 clip_grad_norm_ 再让 policy/value 各 step 一次。
+        # 所有 mini-batch 累积完后，先 clip_grad_norm_ 再统一 step 一次。
         # 真正的梯度累积：许多 mini-grad 加总成一次参数更新，等价于大 batch 更新，
         # 但显著降低单步显存占用。
         for _ in range(ppo_epochs):
             order = torch.randperm(batch_size, device=device)  # minibatch shuffle
             epoch_total = torch.zeros((), device=device)
-            policy_optimizer.zero_grad()
-            value_optimizer.zero_grad()
+            optimizer.zero_grad()
             for mb_i in range(num_minibatches):
                 idx = order[mb_i * MINIBATCH:(mb_i + 1) * MINIBATCH]
 
@@ -447,8 +449,8 @@ def main() -> None:
 
                 # ---- value clipping（v0.5，原版 PPO 形式）----
                 # returns = raw GAE + V_old（上文还原）。把"预测的 value"裁剪到
-                # [V_old - ε, V_old + ε]，取裁剪前后二者中误差更小的一个作为
-                # 该位置的 value loss，防止 value 对优势/return 过拟合。
+                # [V_old - ε, V_old + ε]，取裁剪前后二者中误差更大的一个作为
+                # 该位置更保守的 value loss，防止 value 对优势/return 过拟合。
                 old_val_mb = old_values[idx]
                 ret_mb = returns[idx]
                 value_pred_clipped = old_val_mb + (predicted - old_val_mb).clamp(
@@ -466,8 +468,7 @@ def main() -> None:
             # 梯度裁剪：RL 训练不稳定 -> 在一次更新前把累积梯度的 total-norm
             # 截到 GRAD_CLIP_NORM（0.5），防止个别梯度尖峰扭曲整步更新。
             nn.utils.clip_grad_norm_(policy.parameters(), max_norm=GRAD_CLIP_NORM)
-            policy_optimizer.step()
-            value_optimizer.step()
+            optimizer.step()
 
             mean_total = epoch_total / num_minibatches
             if first_total_loss is None:

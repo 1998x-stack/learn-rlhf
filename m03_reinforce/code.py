@@ -140,6 +140,11 @@ def main() -> None:
         reward_loss.backward()
         reward_optimizer.step()
 
+    # RL 阶段的 RM 是固定环境信号，不属于 policy optimizer，也不应继续积累梯度。
+    reward_model.eval()
+    for param in reward_model.parameters():
+        param.requires_grad_(False)
+
     kl_beta = 0.02
     obj_before = expected_objective(policy, reward_model, reference_policy, kl_beta)
     print_policy("SFT 之后（REINFORCE 之前）", policy)
@@ -175,6 +180,9 @@ def main() -> None:
     # ── 4. 自验证 ──
     with torch.no_grad():
         final_probs = F.softmax(policy(prompt_ids), dim=-1)
+
+    assert all(not p.requires_grad for p in reference_policy.parameters()), "Reference 未冻结"
+    assert all(not p.requires_grad for p in reward_model.parameters()), "Reward Model 未冻结"
 
     # Assert 1（核心且稳健）：期望目标显著提升 —— REINFORCE 确把概率推向 RM 偏好动作。
     assert obj_after > obj_before, (

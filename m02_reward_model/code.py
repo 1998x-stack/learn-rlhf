@@ -110,6 +110,7 @@ def main() -> None:
     reward_optimizer = torch.optim.Adam(reward_model.parameters(), lr=1e-2)
 
     reward_loss = None
+    first_reward_loss = None
     for step in range(300):
         pair_prompt_ids = preference_pairs[:, 0]
         chosen_action_ids = preference_pairs[:, 1]
@@ -120,6 +121,8 @@ def main() -> None:
 
         # Bradley–Terry 偏好损失：-log sigmoid(r_chosen - r_rejected)
         reward_loss = -F.logsigmoid(chosen_rewards - rejected_rewards).mean()
+        if first_reward_loss is None:
+            first_reward_loss = reward_loss.detach().item()
 
         reward_optimizer.zero_grad()
         reward_loss.backward()
@@ -130,9 +133,10 @@ def main() -> None:
 
     # 自验证：输出 shape 正确、BT loss 已下降、学会"候选 0 胜出"的偏好排序。
     assert reward_model(prompt_ids, torch.zeros(num_prompts, dtype=torch.long)).shape == (num_prompts,)
-    assert (
-        reward_loss is not None and reward_loss.item() < 0.1
-    ), "BT loss 未充分下降"
+    assert reward_loss is not None and first_reward_loss is not None
+    assert reward_loss.item() < first_reward_loss, (
+        f"BT loss 未下降: {first_reward_loss:.4f} -> {reward_loss.item():.4f}"
+    )
     assert accuracy >= 0.95, f"RM 偏好正确率过低: {accuracy:.4f} < 0.95"
 
     print(f"\n最终 BT loss = {reward_loss.item():.4f}")

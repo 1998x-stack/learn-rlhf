@@ -24,11 +24,11 @@
 
 ## 阶段 2：审查并深化核心训练链 m01–m06
 
-- [ ] 逐章核对数据、目标函数、梯度流、冻结边界、指标与 README。
-- [ ] 修复 m05/m06 value head 的重复 optimizer step；选择单 optimizer 联合 loss 或互斥参数组。
-- [ ] 检查 REINFORCE/PPO sampled KL 的表述和断言是否准确。
-- [ ] 清理可读性问题，为关键机制补最小而有力的机制断言。
-- [ ] 实跑 m01–m06，并核对输出与 README。
+- [x] 逐章核对数据、目标函数、梯度流、冻结边界、指标与 README。
+- [x] 修复 m05/m06 value head 的重复 optimizer step；采用单 optimizer 联合 loss。
+- [x] 检查 REINFORCE/PPO sampled KL 的表述和断言是否准确。
+- [x] 清理可读性问题，为关键机制补最小而有力的机制断言。
+- [x] 实跑 m01–m06，并核对输出与 README。
 
 提交边界：SFT→RM→REINFORCE→PPO→token PPO→GAE 核心链完成。
 

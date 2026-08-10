@@ -248,6 +248,10 @@ def print_policy(
 
 print_policy("SFT 后的策略", policy)
 
+with torch.no_grad():
+    sft_probabilities = F.softmax(policy(prompt_ids), dim=-1)
+    sft_chosen_probability = sft_probabilities[:, 0].mean().item()
+
 
 # ============================================================
 # 5. 冻结 Reference Policy
@@ -332,6 +336,15 @@ reward_model.eval()
 
 for parameter in reward_model.parameters():
     parameter.requires_grad_(False)
+
+with torch.no_grad():
+    pair_prompt_ids = preference_pairs[:, 0]
+    chosen_action_ids = preference_pairs[:, 1]
+    rejected_action_ids = preference_pairs[:, 2]
+    rm_accuracy = (
+        reward_model(pair_prompt_ids, chosen_action_ids)
+        > reward_model(pair_prompt_ids, rejected_action_ids)
+    ).float().mean().item()
 
 
 # ============================================================
@@ -514,4 +527,22 @@ for update in range(ppo_updates):
 
 print_policy("RLHF/PPO 后的策略", policy)
 
-print("[PASS] m04 PPO MVP: Policy 从带噪 SFT 转向正确回答（reward-hacking-free 经典闭环）")
+with torch.no_grad():
+    final_probabilities = F.softmax(policy(prompt_ids), dim=-1)
+    final_chosen_probability = final_probabilities[:, 0].mean().item()
+
+assert rm_accuracy >= 0.95, f"RM 偏好正确率不足: {rm_accuracy:.3f}"
+assert all(not p.requires_grad for p in reference_policy.parameters()), "Reference 未冻结"
+assert all(not p.requires_grad for p in reward_model.parameters()), "Reward Model 未冻结"
+assert torch.isfinite(policy_loss) and torch.isfinite(value_loss), "PPO loss 出现 NaN/inf"
+assert final_chosen_probability > sft_chosen_probability + 0.2, (
+    f"PPO 未显著提高 chosen 概率: {sft_chosen_probability:.3f} -> "
+    f"{final_chosen_probability:.3f}"
+)
+assert final_probabilities[1, 0].item() > 0.9 and final_probabilities[3, 0].item() > 0.9, (
+    "PPO 未纠正两条带噪 SFT prompt"
+)
+
+print(f"chosen 平均概率: SFT={sft_chosen_probability:.3f} -> "
+      f"PPO={final_chosen_probability:.3f} | RM accuracy={rm_accuracy:.3f}")
+print("[PASS] m04 PPO MVP: RM/Reference 冻结，PPO 将带噪 SFT 策略推向域内偏好回答")

@@ -86,7 +86,7 @@ $$ \mathcal{L}_{PPO} = -\mathbb{E}\left[\min\left(\rho_t A_t,\ \operatorname{cli
 - **PPO 多轮更新**：对 `old_log_probs` 冻结的样本，在每个 epoch 算当前 `log_probs`→`ratio`→`clip`→`policy_loss = −min(...)−entropy_coef·entropy`；同时 Value 用 `F.mse_loss(value, returns)` 更新。
 - 每 25 轮打印 `reward / kl / policy_loss / value_loss`。
 
-**Step 6｜[PASS]**— 运行结束时打印 `[PASS] m04 PPO MVP: Policy 从带噪 SFT 转向正确回答（reward-hacking-free 经典闭环）`，退出码 0。
+**Step 6｜[PASS]**— 运行结束时断言 RM 偏好准确率、Reference/RM 冻结状态、loss 有限、candidate 0 平均概率显著提升，以及两个带噪 SFT prompt 均被纠正；全部通过才打印 `[PASS]` 并以退出码 0 结束。
 
 运行：
 
@@ -107,7 +107,7 @@ python m04_ppo_mvp/code.py
 - **真实 PPO 是 token 级 + GAE**：这里每个"动作"就是候选回答、Value 每提示一个标量；真实 RLHF 每 token 一个动作、每个 token 一个 Value、用 GAE 累积折扣回报（`m06`）。**GAE 是本模块 Advantage 的完整版推广**。
 - **minibatch / 多 epoch**：真实 PPO 会把一个 rollout buffer 切成 minibatch 多轮扫，用 `old_policy 冻结的 log_prob` 反复复用；本模块 `ppo_epochs=4` 已在重复利用。
 - **Adaptive KL**：`kl_beta` 这里固定；生产环境会按 KL 是否超阈值自动调 `β`（`m08`）。
-- **Reward Hacking**：本模块的 KL 惩罚就是防 reward hacking：策略不能只贪 `raw_reward`，还得离 `π_ref` 不远，否则 KL 项把奖励拉回来。
+- **Reward Hacking**：本模块的 KL 惩罚用于降低策略过度偏离 reference 的风险，但这个小型域内实验没有独立的人类评估，不能据此宣称彻底消除了 reward hacking；m07 会显式演示代理奖励被利用。
 
 ## 模块定位
 

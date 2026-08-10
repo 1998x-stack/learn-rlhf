@@ -256,8 +256,9 @@ for p in reference_policy.parameters():
 # 5. PPO 超参数
 # ============================================================
 
-policy_optimizer = torch.optim.Adam(policy.parameters(), lr=5e-3)
-value_optimizer = torch.optim.Adam(policy.value_head.parameters(), lr=5e-3)
+# TinyLM 的 trunk、LM head 与 value head 属于同一个参数图；一个 Adam 拥有全部
+# 参数，保证 value_head 不会同时落入两套优化器状态、在一次 backward 后被 step 两次。
+optimizer = torch.optim.Adam(policy.parameters(), lr=5e-3)
 
 batch_size = 128
 ppo_updates = 500
@@ -339,17 +340,15 @@ def main() -> None:
             predicted = values[:, PROMPT_LEN:]
             value_loss = F.mse_loss(predicted, returns)
 
-            # policy 与 value 共享主体：合并后一次 backward，再分别 step。
+            # policy 与 value 共享主体：合并后一次 backward、由同一个 optimizer step。
             total_loss = policy_loss + value_loss
-            policy_optimizer.zero_grad()
-            value_optimizer.zero_grad()
+            optimizer.zero_grad()
             total_loss.backward()
             # 梯度裁剪：RL 更新不稳定 -> 在一次更新前把共享主体的梯度 total-norm
             # 截到 GRAD_CLIP_NORM，防止个别梯度尖峰扭曲整步更新（value head 是
             # policy.parameters() 的子集，裁剪一次即覆盖 policy 与 value）。
             nn.utils.clip_grad_norm_(policy.parameters(), max_norm=GRAD_CLIP_NORM)
-            policy_optimizer.step()
-            value_optimizer.step()
+            optimizer.step()
 
             if first_total_loss is None:
                 first_total_loss = total_loss.item()
