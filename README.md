@@ -1,5 +1,7 @@
 # Learn RLHF — 从人类偏好到策略优化（PyTorch 递进式教程）
 
+> **English TL;DR:** Build an RLHF system from scratch in PyTorch across the full pipeline — SFT (v0.0) → Bradley–Terry Reward Model (v0.1) → REINFORCE/KL (v0.2) → discrete PPO MVP (v0.3) → token-level PPO (v0.4) → GAE (v0.5) → multi-objective (v0.6) → production distributed RLHF (v0.7) → DPO (v0.8) → RLAIF (v0.9) → verifiable rewards / reasoning RL (v1.0), ending in an end-to-end consolidation (m12). 13 independent, progressive, runnable modules (m00–m12); each `code.py` is CPU-second-fast and gates on `[PASS]`.
+
 从零用 PyTorch 搭建 RLHF（Reinforcement Learning from Human Feedback）系统，覆盖 `learn-rlhf/versions.md` 的完整迭代路线：**SFT（v0.0）→ Reward Model（v0.1）→ REINFORCE/KL（v0.2）→ 离散 PPO MVP（v0.3）→ Token-level PPO（v0.4）→ GAE（v0.5）→ 多目标奖励（v0.6）→ 生产分布式 RLHF（v0.7）→ DPO（v0.8）→ RLAIF（v0.9）→ 可验证奖励（v1.0）**。
 
 本教程是 learn-claude-code / learn-llm / learn-seq2seq 系列在"从人类偏好训练语言模型"方向的延伸。每个模块一个目录，含中文教程（Problem → Solution → How It Works → Code Walkthrough → Key Design Decisions → Going Deeper）与自包含可运行 `code.py`（CPU 秒级跑通）。
